@@ -1,7 +1,10 @@
 #![allow(unused_imports)]
 use std::{io::Read, net::TcpListener, io::Write};
 
+
+const PONG_RESP: &[u8; 7]= b"+PONG\r\n";
 fn main() {
+    
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     println!("Logs from your program will appear here!");
     
@@ -16,12 +19,12 @@ fn main() {
                 // Split by \n and iterate over the lines
                 let lines: Vec<String> = String::from_utf8_lossy(&buffer).split("\n").map(|l| l.to_owned()).collect();
                 for line in lines {
-                    let mut response = "".to_owned();
+                    let mut response: Vec<u8> = vec![];
                     if line.starts_with("PING") {
-                        response = "PONG".to_owned();
+                        response = PONG_RESP.to_vec();
                     }
-                    if response != "" {
-                        stream.write(response.as_bytes()).expect("failed to write to stream");
+                    if !response.is_empty() {
+                        stream.write(&response).expect("failed to write to stream");
                     }
                 }
                 
