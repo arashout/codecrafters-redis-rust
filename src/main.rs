@@ -10,8 +10,21 @@ fn main() {
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                println!("accepted new connection");
-                stream.write_all(b"+PONG\r\n").expect("failed to write to stream");
+                // Loop over the stream's contents
+                let mut buffer = [0; 1024];
+                stream.read(&mut buffer).expect("failed to read from stream");
+                // Split by \n and iterate over the lines
+                let lines: Vec<String> = String::from_utf8_lossy(&buffer).split("\n").map(|l| l.to_owned()).collect();
+                for line in lines {
+                    let mut response = "".to_owned();
+                    if line.starts_with("PING") {
+                        response = "PONG".to_owned();
+                    }
+                    if response != "" {
+                        stream.write(response.as_bytes()).expect("failed to write to stream");
+                    }
+                }
+                
             }
             Err(e) => {
                 println!("error: {}", e);
