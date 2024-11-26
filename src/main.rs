@@ -15,20 +15,18 @@ fn main() {
             Ok(mut stream) => {
                 // Loop over the stream's contents
                 let mut buffer = [0; 1024];
-                stream.read(&mut buffer).expect("failed to read from stream");
-                // Split by \n and iterate over the lines
-                let lines: Vec<String> = String::from_utf8_lossy(&buffer).split("\n").map(|l| l.to_owned()).collect();
-                for line in lines {
-                    println!("{}", line);
-                    let mut response: Vec<u8> = vec![];
-                    if line.starts_with("PING") {
-                        response = PONG_RESP.to_vec();
+                loop {
+                    // Read up to 1024 bytes from the stream
+                    let n = stream.read(&mut buffer).expect("failed to read from stream");
+                    // If we didn't get any bytes then break the loop
+                    if n == 0 {
+                        break;
                     }
-                    if !response.is_empty() {
-                        stream.write(&response).expect("failed to write to stream");
-                    }
+                    // Print the contents to stdout
+                    println!("Received: {}", String::from_utf8_lossy(&buffer));
+                    // Write PONG_RESP to the stream
+                    stream.write(PONG_RESP).expect("failed to write to stream");
                 }
-                
             }
             Err(e) => {
                 println!("error: {}", e);
