@@ -19,6 +19,7 @@ fn main() {
                 // Split by \n and iterate over the lines
                 let lines: Vec<String> = String::from_utf8_lossy(&buffer).split("\n").map(|l| l.to_owned()).collect();
                 for line in lines {
+                    println!("{}", line);
                     let mut response: Vec<u8> = vec![];
                     if line.starts_with("PING") {
                         response = PONG_RESP.to_vec();
