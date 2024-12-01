@@ -8,6 +8,8 @@ use std::{
 };
 use redis_starter_rust::ThreadPool;
 
+mod parser;
+
 const PONG_RESP: &[u8; 7]= b"+PONG\r\n";
 fn main() {
     
@@ -32,6 +34,7 @@ fn main() {
 }
 
 fn handle_connection(mut stream: TcpStream) {
+    // TODO: Not quite sure how to handle parsing, since commands come piece by piece
     // Loop over the stream's contents
     let mut buffer = [0; 1024];
     loop {
@@ -41,8 +44,15 @@ fn handle_connection(mut stream: TcpStream) {
         if n == 0 {
             break;
         }
+        if b"PING" == &buffer[0..4] {
+            stream.write(PONG_RESP).expect("failed to write to stream");
+            continue;
+        }
+        if b"ECHO" == &buffer[0..4] {
+        }
         // Print the contents to stdout
         println!("Received: {}", String::from_utf8_lossy(&buffer));
+        // TODO: Use parser to handle Array commands , print results, do something if echo
         // Write PONG_RESP to the stream
         stream.write(PONG_RESP).expect("failed to write to stream");
     }
