@@ -3,7 +3,7 @@ use std::vec;
 use bytes::BytesMut;
 
 /// Parser for Redis RESP protocol
-struct Parser {
+pub struct Parser {
     index: usize,
 }
 
@@ -24,7 +24,7 @@ impl BufSplit {
 
 /// BufSplit based equivalent to our output type RedisValueRef
 #[derive(Debug, PartialEq)]
-enum RedisBufSplit {
+pub enum RedisBufSplit {
     String(BufSplit),
     Error(BufSplit),
     Int(i64),
@@ -34,7 +34,7 @@ enum RedisBufSplit {
 }
 
 impl RedisBufSplit {
-    fn to_string(&self, src: &BytesMut) -> String {
+    pub fn to_string(&self, src: &BytesMut) -> String {
         match self {
             RedisBufSplit::String(word) => word.to_string(src),
             RedisBufSplit::Error(word) => word.to_string(src),
@@ -111,7 +111,7 @@ impl Parser {
         Ok(Some((end + 2, RedisBufSplit::String(BufSplit(start, end)))))
     }
 
-    fn parse_array(src: &BytesMut, index: usize) -> RedisResult {
+    pub fn parse_array(src: &BytesMut, index: usize) -> RedisResult {
         // Array format:
         // *<usize>\r\n<element_1>\r\n<element_2>\r\n...
         assert!(src[index] == b'*');

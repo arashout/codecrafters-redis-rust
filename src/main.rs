@@ -7,10 +7,27 @@ use std::{
     time::Duration,
 };
 use redis_starter_rust::ThreadPool;
-
+use bytes::BytesMut;
 mod parser;
+use parser::{RedisBufSplit};
 
 const PONG_RESP: &[u8; 7]= b"+PONG\r\n";
+
+macro_rules! cast {
+        ($target: expr, $pat: path) => {
+            {
+                if let $pat(a) = $target { // #1
+                    a
+                } else {
+                    panic!(
+                        "mismatch variant when cast to {}", 
+                        stringify!($pat)); // #2
+                }
+            }
+        };
+    }
+
+
 fn main() {
     
     // You can use print statements as follows for debugging, they'll be visible when running tests.
@@ -48,7 +65,28 @@ fn handle_connection(mut stream: TcpStream) {
             stream.write(PONG_RESP).expect("failed to write to stream");
             continue;
         }
-        if b"ECHO" == &buffer[0..4] {
+        let bm = BytesMut::from(&buffer[0..n]);
+        if bm.len() == 0 {
+            continue;
+        }
+        match buffer[0] {
+            b'*' => {
+                let res = parser::Parser::parse_array(&bm, 0).expect("failed to parse array").expect("Expected some result");
+                let a = cast!(res.1, RedisBufSplit::Array);
+                let command = a[0].to_string(&bm);
+                println!("{}", command);
+                match command.as_str() {
+                    "ECHO" => {
+                        let echo_str = a[1].to_string(&bm);
+                        let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
+                        stream.write(echo_resp.as_bytes()).expect("failed to write to stream");
+                    }
+                    _ => unimplemented!("No other commands implemented yet"),
+                }
+
+
+            }
+            _ => unimplemented!("No other commands implemented yet"),
         }
         // Print the contents to stdout
         println!("Received: {}", String::from_utf8_lossy(&buffer));
@@ -56,6 +94,4 @@ fn handle_connection(mut stream: TcpStream) {
         // Write PONG_RESP to the stream
         stream.write(PONG_RESP).expect("failed to write to stream");
     }
-
-
 }
