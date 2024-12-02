@@ -222,17 +222,5 @@ mod tests {
         }
     }
 
-    // #[test]
-    // fn test_tokenize() {
-    //     let buf = BytesMut::from(&b"*2\r\n$3\r\nSET\r\n$3\r\nfoo\r\n"[..]);
-    //     let tokens = Parser::tokenize(&buf, 0);
-    //     assert_eq!(tokens.len(), 5);
-    //     assert_eq!(tokens[0], RedisBufSplit::Array(vec![
-    //         RedisBufSplit::String(BufSplit(0, 2)),
-    //         RedisBufSplit::String(BufSplit(2, 4)),
-    //         RedisBufSplit::String(BufSplit(4, 6)),
-    //         RedisBufSplit::String(BufSplit(6, 8)),
-    //         RedisBufSplit::String(BufSplit(8, 10)),
-    //     ]));
-    //     }
+    
 }

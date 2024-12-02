@@ -57,13 +57,11 @@ fn handle_connection(mut stream: TcpStream) {
     loop {
         // Read up to 1024 bytes from the stream
         let n = stream.read(&mut buffer).expect("failed to read from stream");
+        // Print the contents to stdout
+        println!("Received: {}", String::from_utf8_lossy(&buffer));
         // If we didn't get any bytes then break the loop
         if n == 0 {
             break;
-        }
-        if b"PING" == &buffer[0..4] {
-            stream.write(PONG_RESP).expect("failed to write to stream");
-            continue;
         }
         let bm = BytesMut::from(&buffer[0..n]);
         if bm.len() == 0 {
@@ -81,6 +79,9 @@ fn handle_connection(mut stream: TcpStream) {
                         let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
                         stream.write(echo_resp.as_bytes()).expect("failed to write to stream");
                     }
+                    "PING" => {
+                        stream.write(PONG_RESP).expect("failed to write to stream");
+                    }
                     _ => unimplemented!("No other commands implemented yet"),
                 }
 
@@ -88,8 +89,6 @@ fn handle_connection(mut stream: TcpStream) {
             }
             _ => unimplemented!("No other commands implemented yet"),
         }
-        // Print the contents to stdout
-        println!("Received: {}", String::from_utf8_lossy(&buffer));
         // TODO: Use parser to handle Array commands , print results, do something if echo
         // Write PONG_RESP to the stream
         stream.write(PONG_RESP).expect("failed to write to stream");
