@@ -72,22 +72,21 @@ fn handle_connection(mut stream: TcpStream) {
                 let res = parser::Parser::parse_array(&bm, 0).expect("failed to parse array").expect("Expected some result");
                 let a = cast!(res.1, RedisBufSplit::Array);
                 let command = a[0].to_string(&bm);
-                println!("{}", command);
-                match command.as_str() {
-                    "ECHO" => {
+                match command.to_lowercase().as_str() {
+                    "echo" => {
                         let echo_str = a[1].to_string(&bm);
                         let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
                         stream.write(echo_resp.as_bytes()).expect("failed to write to stream");
                     }
-                    "PING" => {
+                    "ping" => {
                         stream.write(PONG_RESP).expect("failed to write to stream");
                     }
-                    "SET" => {
+                    "set" => {
                         let key = a[1].to_string(&bm);
                         let value = a[2].to_string(&bm);
                         println!("{} {}", key, value);
                     }
-                    "GET" => {
+                    "get" => {
                         let key = a[1].to_string(&bm);
                         println!("{}", key);
                     }
@@ -98,8 +97,5 @@ fn handle_connection(mut stream: TcpStream) {
             }
             _ => unimplemented!("No other commands implemented yet"),
         }
-        // TODO: Use parser to handle Array commands , print results, do something if echo
-        // Write PONG_RESP to the stream
-        stream.write(PONG_RESP).expect("failed to write to stream");
     }
 }
