@@ -109,7 +109,8 @@ impl RedisServer {
     pub fn info(&self, section: &str)-> RedisValue {
         match section {
             "replication" => {
-                self.config.lock().unwrap().get("info_replication").cloned().unwrap_or(RedisValue::Null)
+                let role = self.get_config("role").unwrap_or(RedisValue::String("master".to_string()));
+                RedisValue::String(format!("role:{}", role))
             }
             _ => RedisValue::Null,
         }
@@ -121,7 +122,7 @@ impl RedisServer {
             match arg.as_str() {
                 "--dir" => {
                     if let Some(dir) = args_iter.next() {
-                        self.config.lock().unwrap().insert("dir".to_string(), RedisValue::Array(vec![RedisValue::String("dir".to_string()), RedisValue::String(dir.clone())]));
+                       self.set_config("dir", RedisValue::Array(vec![RedisValue::String("dir".to_string()), RedisValue::String(dir.clone())]));
                     } else {
                         eprintln!("Expected a directory after --dir");
                         return;
@@ -129,7 +130,7 @@ impl RedisServer {
                 }
                 "--dbfilename" => {
                     if let Some(filename) = args_iter.next() {
-                        self.config.lock().unwrap().insert("dbfilename".to_string(), RedisValue::Array(vec![RedisValue::String("dbfilename".to_string()), RedisValue::String(filename.clone())]));
+                       self.set_config("dbfilename", RedisValue::Array(vec![RedisValue::String("dbfilename".to_string()), RedisValue::String(filename.clone())]));
                     } else {
                         eprintln!("Expected a filename after --dbfilename");
                         return;
@@ -137,16 +138,25 @@ impl RedisServer {
                 }
                 "--port" => {
                     if let Some(port) = args_iter.next() {
-                        self.config.lock().unwrap().insert("port".to_string(),  RedisValue::String(port.clone()));
+                       self.set_config("port",  RedisValue::String(port.clone()));
                     } else {
                         eprintln!("Expected a port number after --port");
+                        return;
+                    }
+                }
+                "--replicaof" => {
+                    // --replicaof "<MASTER_HOST> <MASTER_PORT>"
+                    if let Some(host_and_port) = args_iter.next() {
+                        let (host, port) = host_and_port.split_once(" ").expect("Invalid replicaof format");
+                        self.set_config("replicaof",  RedisValue::Array(vec![RedisValue::String(host.to_string()), RedisValue::String(port.to_string())]));
+                        self.set_config("role",  RedisValue::String("slave".to_string()));
+                    } else {
+                        eprintln!("Expected a host after --replicaof");
                         return;
                     }
                 }
                 _ => {}
             }
         }
-        // Default values
-        self.config.lock().unwrap().insert("info_replication".to_string(), RedisValue::String("role:master".to_string()));
     }
 }
