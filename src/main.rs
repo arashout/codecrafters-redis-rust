@@ -82,6 +82,15 @@ fn handle_connection(mut stream: TcpStream) {
                     "PING" => {
                         stream.write(PONG_RESP).expect("failed to write to stream");
                     }
+                    "SET" => {
+                        let key = a[1].to_string(&bm);
+                        let value = a[2].to_string(&bm);
+                        println!("{} {}", key, value);
+                    }
+                    "GET" => {
+                        let key = a[1].to_string(&bm);
+                        println!("{}", key);
+                    }
                     _ => unimplemented!("No other commands implemented yet"),
                 }
 
