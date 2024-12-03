@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-
+use std::fmt::Display;
 use crate::parser::RedisBufSplit;
 
 #[derive(Debug, PartialEq, Clone)]
@@ -29,6 +29,27 @@ impl RedisValue {
         }
     }
 }
+impl Display for RedisValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RedisValue::String(s) => write!(f, "{}", s),
+            RedisValue::Int(i) => write!(f, "{}", i),
+            RedisValue::Array(a) => {
+                let mut s = String::new();
+                s.push('[');
+                for (i, v) in a.iter().enumerate() {
+                    if i > 0 {
+                        s.push(',');
+                    }
+                    s.push_str(&v.to_string());
+                }
+                s.push(']');
+                write!(f, "{}", s)
+            }
+            RedisValue::Null => write!(f, "null"),
+        }
+    }
+}
 pub struct RedisServer {
     // Need to make thread safe for concurrent access
     pub db: Mutex<HashMap<String, (RedisValue, Option<Instant>)>>,
@@ -53,6 +74,14 @@ impl RedisServer {
                         self.config.lock().unwrap().insert("dbfilename".to_string(), RedisValue::Array(vec![RedisValue::String("dbfilename".to_string()), RedisValue::String(filename.clone())]));
                     } else {
                         eprintln!("Expected a filename after --dbfilename");
+                        return;
+                    }
+                }
+                "--port" => {
+                    if let Some(port) = args_iter.next() {
+                        self.config.lock().unwrap().insert("port".to_string(),  RedisValue::String(port.clone()));
+                    } else {
+                        eprintln!("Expected a port number after --port");
                         return;
                     }
                 }

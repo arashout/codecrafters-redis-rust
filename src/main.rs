@@ -41,8 +41,9 @@ fn main() {
     println!("Logs from your program will appear here!");
     
     let pool = ThreadPool::build(4).expect("Failed to build thread pool");
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     let server = RedisServer::new(env::args().collect());
+    let port = server.get_config("port").map_or(6379, |v| v.to_string().parse().unwrap());
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port)).unwrap();
     let server = Arc::new(server);
     for stream in listener.incoming() {
         let server = server.clone();
