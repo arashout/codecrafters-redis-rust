@@ -13,7 +13,6 @@ use parser::{RedisBufSplit};
 
 mod server;
 use server::RedisServer;
-
 use std::sync::Arc;
 
 const PONG_RESP: &[u8; 7]= b"+PONG\r\n";
@@ -91,9 +90,21 @@ fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                         stream.write(PONG_RESP).expect("failed to write to stream");
                     }
                     "set" => {
-                        let key = a[1].to_string(&bm);
-                        let value = a[2].to_string(&bm);
-                        server.set(&key, &value);
+                        // Determine if there is an expiry by checking the number of arguments
+                        if a.len() == 5 {
+                            // Set the expiry
+                            let key = a[1].to_string(&bm);
+                            let value = a[2].to_string(&bm);
+                            let expiry = a[4].to_string(&bm);
+                            let expiry_millisecond = expiry.parse::<u64>().expect("failed to parse expiry");
+                            let expiry_duration = Duration::from_millis(expiry_millisecond);
+                            server.set(&key, &value, Some(expiry_duration));
+                        } else {
+                            // No expiry
+                            let key = a[1].to_string(&bm);
+                            let value = a[2].to_string(&bm);
+                            server.set(&key, &value, None);
+                        }
                         stream.write(OK_RESP).expect("failed to write to stream");
                     }
                     "get" => {
