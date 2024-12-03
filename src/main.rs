@@ -143,6 +143,11 @@ fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                             _ => unimplemented!("No other commands implemented yet"),
                         }
                     }
+                    "info" => {
+                        let arg = a[1].to_string(&bm);
+                        let info_resp = server.info(&arg).to_response();
+                        stream.write(info_resp.as_bytes()).expect("failed to write to stream");
+                    }
                     _ => unimplemented!("No other commands implemented yet"),
                 }
 

@@ -57,6 +57,64 @@ pub struct RedisServer {
 }
 
 impl RedisServer {
+    pub fn new(args: Vec<String>) -> RedisServer {
+        let mut rs = RedisServer {
+            db: Mutex::new(HashMap::new()),
+            config: Mutex::new(HashMap::new()),
+        };
+        rs.parse_command_line(&args);
+        rs
+    }
+    
+    pub fn get(&self, key: &str) -> Option<RedisValue> {
+        let mut db = self.db.lock().unwrap();
+        let res = db.get(key).cloned();
+        // Check  if the key has an expiration time and if it has expired
+        if let Some((value, expiration)) = res.as_ref() {
+            if let Some(expiration) = expiration {
+                if Instant::now() > *expiration {
+                    // Key has expired, remove it from the database
+                    db.remove(key);
+                    return None;
+                }
+                return Some(value.clone());
+            } else {
+                return Some(value.clone());
+            }
+        }
+        None
+    }
+
+    pub fn get_config(&self, key: &str) -> Option<RedisValue> {
+        let config = self.config.lock().unwrap();
+        config.get(key).cloned()
+    }
+    pub fn set_config(&self, key: &str, value: RedisValue) {
+        let mut config = self.config.lock().unwrap();
+        config.insert(key.to_string(), value);
+    }
+    
+    pub fn set(&self, key: &str, value: RedisValue, ttl: Option<Duration>) {
+        let mut db = self.db.lock().unwrap();
+        if ttl.is_some() {
+            db.insert(
+                key.to_string(),
+                (value, Some(Instant::now() + ttl.unwrap())),
+            );
+        } else {
+            db.insert(key.to_string(), (value, None));
+        }
+    }
+
+    pub fn info(&self, section: &str)-> RedisValue {
+        match section {
+            "replication" => {
+                self.config.lock().unwrap().get("info_replication").cloned().unwrap_or(RedisValue::Null)
+            }
+            _ => RedisValue::Null,
+        }
+    }
+
     fn parse_command_line(&mut self, args: &Vec<String>) {
         let mut args_iter = args.iter();
         while let Some(arg) = args_iter.next() {
@@ -88,56 +146,7 @@ impl RedisServer {
                 _ => {}
             }
         }
-    }
-    pub fn new(args: Vec<String>) -> RedisServer {
-        // Initialize the database with some default config values
-        let mut config = HashMap::new();
-
-        let mut rs = RedisServer {
-            db: Mutex::new(HashMap::new()),
-            config: Mutex::new(config),
-        };
-        rs.parse_command_line(&args);
-        rs
-    }
-
-    pub fn get(&self, key: &str) -> Option<RedisValue> {
-        let mut db = self.db.lock().unwrap();
-        let res = db.get(key).cloned();
-        // Check  if the key has an expiration time and if it has expired
-        if let Some((value, expiration)) = res.as_ref() {
-            if let Some(expiration) = expiration {
-                if Instant::now() > *expiration {
-                    // Key has expired, remove it from the database
-                    db.remove(key);
-                    return None;
-                }
-                return Some(value.clone());
-            } else {
-                return Some(value.clone());
-            }
-        }
-        None
-    }
-
-    pub fn get_config(&self, key: &str) -> Option<RedisValue> {
-        let config = self.config.lock().unwrap();
-        config.get(key).cloned()
-    }
-    pub fn set_config(&self, key: &str, value: RedisValue) {
-        let mut config = self.config.lock().unwrap();
-        config.insert(key.to_string(), value);
-    }
-
-    pub fn set(&self, key: &str, value: RedisValue, ttl: Option<Duration>) {
-        let mut db = self.db.lock().unwrap();
-        if ttl.is_some() {
-            db.insert(
-                key.to_string(),
-                (value, Some(Instant::now() + ttl.unwrap())),
-            );
-        } else {
-            db.insert(key.to_string(), (value, None));
-        }
+        // Default values
+        self.config.lock().unwrap().insert("info_replication".to_string(), RedisValue::String("role:master".to_string()));
     }
 }
