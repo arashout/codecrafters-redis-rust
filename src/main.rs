@@ -5,6 +5,7 @@ use std::{
     net::{TcpListener, TcpStream},
     thread,
     time::Duration,
+    env,
 };
 use redis_starter_rust::ThreadPool;
 use bytes::BytesMut;
@@ -12,7 +13,7 @@ mod parser;
 use parser::{RedisBufSplit};
 
 mod server;
-use server::RedisServer;
+use server::{RedisServer, RedisValue};
 use std::sync::Arc;
 
 const PONG_RESP: &[u8; 7]= b"+PONG\r\n";
@@ -41,7 +42,7 @@ fn main() {
     
     let pool = ThreadPool::build(4).expect("Failed to build thread pool");
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    let server = RedisServer::new();
+    let server = RedisServer::new(env::args().collect());
     let server = Arc::new(server);
     for stream in listener.incoming() {
         let server = server.clone();
@@ -98,12 +99,12 @@ fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                             let expiry = a[4].to_string(&bm);
                             let expiry_millisecond = expiry.parse::<u64>().expect("failed to parse expiry");
                             let expiry_duration = Duration::from_millis(expiry_millisecond);
-                            server.set(&key, &value, Some(expiry_duration));
+                            server.set(&key, RedisValue::String(value), Some(expiry_duration));
                         } else {
                             // No expiry
                             let key = a[1].to_string(&bm);
                             let value = a[2].to_string(&bm);
-                            server.set(&key, &value, None);
+                            server.set(&key, RedisValue::String(value), None);
                         }
                         stream.write(OK_RESP).expect("failed to write to stream");
                     }
@@ -112,8 +113,7 @@ fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                         let value = server.get(&key);
                         match value {
                             Some(value) => {
-                                let resp = format!("${}\r\n{}\r\n", value.len(), value);
-                                stream.write(resp.as_bytes()).expect("failed to write to stream");
+                                stream.write(value.to_response().as_bytes()).expect("failed to write to stream");
                             }
                             None => {
                                 stream.write(NULL_RESP).expect("failed to write to stream");
@@ -124,6 +124,23 @@ fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                         let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
                         let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
                         stream.write(docs_resp.as_bytes()).expect("failed to write to stream");
+                    }
+                    "config" => {
+                        match a[1].to_string(&bm).to_lowercase().as_str() {
+                            "get" => {
+                                let key = a[2].to_string(&bm);
+                                let value = server.get_config(&key);
+                                match value {
+                                    Some(value) => {
+                                        stream.write(value.to_response().as_bytes()).expect("failed to write to stream");
+                                    }
+                                    None => {
+                                        stream.write(NULL_RESP).expect("failed to write to stream");
+                                    }
+                                }
+                            }
+                            _ => unimplemented!("No other commands implemented yet"),
+                        }
                     }
                     _ => unimplemented!("No other commands implemented yet"),
                 }

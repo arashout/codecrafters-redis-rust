@@ -10,7 +10,7 @@ pub struct Parser {
 /// Fundamental struct for viewing byte slices
 ///
 /// Used for zero-copy redis values.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 struct BufSplit(usize, usize);
 impl BufSplit {
     fn len(&self) -> usize {
@@ -23,7 +23,7 @@ impl BufSplit {
 }
 
 /// BufSplit based equivalent to our output type RedisValueRef
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum RedisBufSplit {
     String(BufSplit),
     Error(BufSplit),
@@ -53,6 +53,30 @@ impl RedisBufSplit {
             }
             RedisBufSplit::NullArray => "[]".to_string(),
             RedisBufSplit::NullBulkString => "null".to_string(),
+        }
+    }
+    pub fn to_resp(&self, src: &BytesMut) -> String {
+        match self {
+            RedisBufSplit::String(word) => {
+                format!("${}\r\n{}\r\n", word.len(), word.to_string(src))
+            }
+            RedisBufSplit::Error(word) => format!("-{}\r\n", word.to_string(src)),
+            RedisBufSplit::Int(i) => format!(":{}\r\n", i),
+            RedisBufSplit::Array(words) => {
+                let mut s = String::new();
+                s.push('*');
+                s.push_str(&words.len().to_string());
+                s.push_str("\r\n");
+                for (i, word) in words.iter().enumerate() {
+                    if i > 0 {
+                        s.push_str("\r\n");
+                    }
+                    s.push_str(&word.to_resp(src));
+                }
+                s
+            }
+            RedisBufSplit::NullArray => "*-1\r\n".to_string(),
+            RedisBufSplit::NullBulkString => "$-1\r\n".to_string(),
         }
     }
 }
@@ -221,6 +245,4 @@ mod tests {
             _ => panic!("expected array"),
         }
     }
-
-    
 }
