@@ -122,7 +122,7 @@ impl Parser {
         Ok((split.1 + 2, res.unwrap()))
     }
 
-    fn parse_bulk_string(src: &BytesMut, index: usize) -> RedisResult {
+    pub fn parse_bulk_string(src: &BytesMut, index: usize) -> RedisResult {
         // Bulk String format:
         // $<usize>\r\n<data>\r\n
         assert!(src[index] == b'$');
@@ -159,8 +159,9 @@ impl Parser {
         Ok(Some((pos, RedisBufSplit::Array(tokens))))
     }
 
-    fn simple_string(buf: &mut BytesMut, pos: usize) -> RedisResult {
-        match Parser::token(buf, pos) {
+    pub fn simple_string(buf: &BytesMut, pos: usize) -> RedisResult {
+        // Skip the first byte "+"
+        match Parser::token(buf, pos+1) {
             Some((pos, word)) => Ok(Some((pos, RedisBufSplit::String(word)))),
             None => Ok(None),
         }
@@ -243,6 +244,18 @@ mod tests {
                 assert_eq!(words[1].to_string(&buf), "foo");
             }
             _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn test_simple_string() {
+        let mut buf = BytesMut::from(&b"+OK\r\n"[..]);
+        let (pos, split) = Parser::simple_string(&mut buf, 0).unwrap().unwrap();
+        match split {
+            RedisBufSplit::String(word) => {
+                assert_eq!(word.to_string(&buf), "OK");
+            }
+            _ => panic!("expected string"),
         }
     }
 }

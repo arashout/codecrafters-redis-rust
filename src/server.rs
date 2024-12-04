@@ -1,10 +1,10 @@
+use crate::parser::RedisBufSplit;
 use core::panic;
 use std::collections::HashMap;
+use std::fmt::Display;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::fmt::Display;
-use crate::parser::RedisBufSplit;
-use std::io::Write;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -52,25 +52,39 @@ impl Display for RedisValue {
         }
     }
 }
+
+pub struct RedisConfig {
+    pub dir: String,
+    pub dbfilename: String,
+    pub port: u16,
+    pub master_host_port: Option<(String, u16)>,
+    pub master_replid: String,
+    pub master_reploffset: i64,
+}
 pub struct RedisServer {
     // Need to make thread safe for concurrent access
     pub db: Mutex<HashMap<String, (RedisValue, Option<Instant>)>>,
-    config: Mutex<HashMap<String, RedisValue>>,
+    pub config: RedisConfig,
 }
 
 impl RedisServer {
     pub fn new(args: Vec<String>) -> RedisServer {
         let mut rs = RedisServer {
             db: Mutex::new(HashMap::new()),
-            config: Mutex::new(HashMap::new()),
+            config: RedisConfig {
+                dir: String::from("."),
+                dbfilename: String::from("dump.rdb"),
+                port: 6379,
+                master_host_port: None,
+                master_replid: String::from("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"),
+                master_reploffset: 0,
+            },
         };
         rs.parse_command_line(&args);
 
-        rs.handshake_master();
-
         rs
     }
-    
+
     pub fn get(&self, key: &str) -> Option<RedisValue> {
         let mut db = self.db.lock().unwrap();
         let res = db.get(key).cloned();
@@ -90,41 +104,6 @@ impl RedisServer {
         None
     }
 
-    pub fn get_config(&self, key: &str) -> Option<RedisValue> {
-        let config = self.config.lock().unwrap();
-        config.get(key).cloned()
-    }
-    pub fn set_config(&self, key: &str, value: RedisValue) {
-        let mut config = self.config.lock().unwrap();
-        config.insert(key.to_string(), value);
-    }
-
-    pub fn handshake_master(&self) {
-        let replicaof = self.get_config("replicaof");
-        if replicaof.is_none() {
-            return;
-        }
-        let mut master_host = String::new();
-        let mut master_port = 0;
-        let replicaof = replicaof.unwrap();
-        if let RedisValue::Array(ref array) = replicaof {
-            if array.len() == 2 {
-                master_host = array[0].to_string();
-                master_port = array[1].to_string().parse::<u16>().unwrap();
-                
-            } else {
-                panic!("replicaof format is wrong: {}", replicaof.to_string());
-            }
-        }
-        // Use basic TCP connection to send PING command to master
-        let mut stream = match std::net::TcpStream::connect((master_host.to_string(), master_port.to_string().parse::<u16>().unwrap())) {
-            Ok(stream) => stream,
-            Err(_) => panic!("Failed to connect to master"),
-        };
-        let command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
-        stream.write_all(command.to_response().as_bytes()).unwrap();
-    }
-    
     pub fn set(&self, key: &str, value: RedisValue, ttl: Option<Duration>) {
         let mut db = self.db.lock().unwrap();
         if ttl.is_some() {
@@ -137,11 +116,18 @@ impl RedisServer {
         }
     }
 
-    pub fn info(&self, section: &str)-> RedisValue {
+    pub fn info(&self, section: &str) -> RedisValue {
         match section {
             "replication" => {
-                let role = self.get_config("role").unwrap_or(RedisValue::String("master".to_string()));
-                RedisValue::String(format!("role:{}\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\nmaster_repl_offset:0", role))
+                let role = if self.config.master_host_port.is_some() {
+                    "slave"
+                } else {
+                    "master"
+                };
+                RedisValue::String(format!(
+                    "role:{}\nmaster_replid:{}\nmaster_repl_offset:{}",
+                    role, self.config.master_replid, self.config.master_reploffset
+                ))
             }
             _ => RedisValue::Null,
         }
@@ -153,7 +139,7 @@ impl RedisServer {
             match arg.as_str() {
                 "--dir" => {
                     if let Some(dir) = args_iter.next() {
-                       self.set_config("dir", RedisValue::Array(vec![RedisValue::String("dir".to_string()), RedisValue::String(dir.clone())]));
+                        self.config.dir = dir.clone();
                     } else {
                         eprintln!("Expected a directory after --dir");
                         return;
@@ -161,7 +147,7 @@ impl RedisServer {
                 }
                 "--dbfilename" => {
                     if let Some(filename) = args_iter.next() {
-                       self.set_config("dbfilename", RedisValue::Array(vec![RedisValue::String("dbfilename".to_string()), RedisValue::String(filename.clone())]));
+                        self.config.dbfilename = filename.clone();
                     } else {
                         eprintln!("Expected a filename after --dbfilename");
                         return;
@@ -169,7 +155,7 @@ impl RedisServer {
                 }
                 "--port" => {
                     if let Some(port) = args_iter.next() {
-                       self.set_config("port",  RedisValue::String(port.clone()));
+                        self.config.port = port.parse().expect("Invalid port number");
                     } else {
                         eprintln!("Expected a port number after --port");
                         return;
@@ -178,9 +164,11 @@ impl RedisServer {
                 "--replicaof" => {
                     // --replicaof "<MASTER_HOST> <MASTER_PORT>"
                     if let Some(host_and_port) = args_iter.next() {
-                        let (host, port) = host_and_port.split_once(" ").expect("Invalid replicaof format");
-                        self.set_config("replicaof",  RedisValue::Array(vec![RedisValue::String(host.to_string()), RedisValue::String(port.to_string())]));
-                        self.set_config("role",  RedisValue::String("slave".to_string()));
+                        let (host, port) = host_and_port
+                            .split_once(" ")
+                            .expect("Invalid replicaof format");
+                        self.config.master_host_port =
+                            Some((host.to_string(), port.parse().expect("Invalid port number")));
                     } else {
                         eprintln!("Expected a host after --replicaof");
                         return;
