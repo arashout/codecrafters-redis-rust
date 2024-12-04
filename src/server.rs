@@ -110,7 +110,7 @@ impl RedisServer {
         match section {
             "replication" => {
                 let role = self.get_config("role").unwrap_or(RedisValue::String("master".to_string()));
-                RedisValue::String(format!("role:{}", role))
+                RedisValue::String(format!("role:{}\nmaster_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb\nmaster_repl_offset:0", role))
             }
             _ => RedisValue::Null,
         }
