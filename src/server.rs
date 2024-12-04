@@ -1,8 +1,10 @@
+use core::panic;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::fmt::Display;
 use crate::parser::RedisBufSplit;
+use std::io::Write;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -63,6 +65,9 @@ impl RedisServer {
             config: Mutex::new(HashMap::new()),
         };
         rs.parse_command_line(&args);
+
+        rs.handshake_master();
+
         rs
     }
     
@@ -92,6 +97,32 @@ impl RedisServer {
     pub fn set_config(&self, key: &str, value: RedisValue) {
         let mut config = self.config.lock().unwrap();
         config.insert(key.to_string(), value);
+    }
+
+    pub fn handshake_master(&self) {
+        let replicaof = self.get_config("replicaof");
+        if replicaof.is_none() {
+            return;
+        }
+        let mut master_host = String::new();
+        let mut master_port = 0;
+        let replicaof = replicaof.unwrap();
+        if let RedisValue::Array(ref array) = replicaof {
+            if array.len() == 2 {
+                master_host = array[0].to_string();
+                master_port = array[1].to_string().parse::<u16>().unwrap();
+                
+            } else {
+                panic!("replicaof format is wrong: {}", replicaof.to_string());
+            }
+        }
+        // Use basic TCP connection to send PING command to master
+        let mut stream = match std::net::TcpStream::connect((master_host.to_string(), master_port.to_string().parse::<u16>().unwrap())) {
+            Ok(stream) => stream,
+            Err(_) => panic!("Failed to connect to master"),
+        };
+        let command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
+        stream.write_all(command.to_response().as_bytes()).unwrap();
     }
     
     pub fn set(&self, key: &str, value: RedisValue, ttl: Option<Duration>) {
