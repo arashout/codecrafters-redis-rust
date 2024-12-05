@@ -85,7 +85,7 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
         }
         i = pos;
     }
-    println!("{}", buf[i..].to_string());
+    println!("{}", String::from_utf8_lossy(buf[i..].as_ref()));
         
     
 
