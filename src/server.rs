@@ -157,113 +157,121 @@ impl RedisServer {
         &self,
         bm: BytesMut,
         stream: &mut tokio::net::TcpStream,
-        tx: Arc<broadcast::Sender<String>>,
+        tx: Option<Arc<broadcast::Sender<String>>>,
     ) {
         let is_replica = self.config.master_host_port.is_some();
-        match bm[0] {
-            b'*' => {
-                let res = parser::Parser::parse_array(&bm, 0)
-                    .expect("failed to parse array")
-                    .expect("Expected some result");
-                let a = cast!(res.1, parser::RedisBufSplit::Array);
-                let command = a[0].to_string(&bm);
-                match command.to_lowercase().as_str() {
-                    "echo" => {
-                        let echo_str = a[1].to_string(&bm);
-                        let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
-                        self.reply(stream, echo_resp.as_bytes(), false).await;
-                    }
-                    "ping" => {
-                        self.reply(stream, PONG_RESP, false).await;
-                    }
-                    "set" => {
-                        if self.config.master_host_port.is_none() {
-                            let s = String::from_utf8_lossy(&bm);
-                            println!("Sending broadcast message: {}", s);
-                            tx.send(s.into_owned())
-                                .expect("failed to send to broadcast");
+        let mut pos = 0;
+        while pos < bm.len() {
+            match bm[pos] {
+                b'*' => {
+                    let (i, res) = parser::Parser::parse_array(&bm, pos)
+                        .expect("failed to parse array")
+                        .expect("Expected some result");
+                    pos = i;
+                    let a = cast!(res, parser::RedisBufSplit::Array);
+                    let command = a[0].to_string(&bm);
+                    match command.to_lowercase().as_str() {
+                        "echo" => {
+                            let echo_str = a[1].to_string(&bm);
+                            let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
+                            self.reply(stream, echo_resp.as_bytes(), false).await;
                         }
-                        // Determine if there is an expiry by checking the number of arguments
-                        if a.len() == 5 {
-                            // Set the expiry
-                            let key = a[1].to_string(&bm);
-                            let value = a[2].to_string(&bm);
-                            let expiry = a[4].to_string(&bm);
-                            let expiry_millisecond =
-                                expiry.parse::<u64>().expect("failed to parse expiry");
-                            let expiry_duration = Duration::from_millis(expiry_millisecond);
-                            self.set(&key, RedisValue::String(value), Some(expiry_duration));
-                        } else {
-                            // No expiry
-                            let key = a[1].to_string(&bm);
-                            let value = a[2].to_string(&bm);
-                            self.set(&key, RedisValue::String(value), None);
+                        "ping" => {
+                            self.reply(stream, PONG_RESP, false).await;
                         }
-                        self.reply(stream, OK_RESP, is_replica).await;
-                    }
-                    "get" => {
-                        let key = a[1].to_string(&bm);
-                        let value = self.get(&key);
-                        match value {
-                            Some(value) => {
-                                self.reply(stream, value.to_response().as_bytes(), false)
-                                    .await;
+                        "set" => {
+                            if self.config.master_host_port.is_none() {
+                                let s = String::from_utf8_lossy(&bm);
+                                println!("Sending broadcast message: {}", s);
+                                tx.as_ref().unwrap().send(s.into_owned())
+                                    .expect("failed to send to broadcast");
                             }
-                            None => {
-                                self.reply(stream, NULL_RESP, false).await;
+                            // Determine if there is an expiry by checking the number of arguments
+                            if a.len() == 5 {
+                                // Set the expiry
+                                let key = a[1].to_string(&bm);
+                                let value = a[2].to_string(&bm);
+                                let expiry = a[4].to_string(&bm);
+                                let expiry_millisecond =
+                                    expiry.parse::<u64>().expect("failed to parse expiry");
+                                let expiry_duration = Duration::from_millis(expiry_millisecond);
+                                self.set(&key, RedisValue::String(value), Some(expiry_duration));
+                            } else {
+                                // No expiry
+                                let key = a[1].to_string(&bm);
+                                let value = a[2].to_string(&bm);
+                                self.set(&key, RedisValue::String(value), None);
                             }
-                        };
-                    }
-                    "docs" => {
-                        let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
-                        let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
-
-                        self.reply(stream, docs_resp.as_bytes(), false).await;
-                    }
-                    "info" => {
-                        let arg = a[1].to_string(&bm);
-                        let info_resp = self.info(&arg).to_response();
-                        self.reply(stream, info_resp.as_bytes(), false).await;
-                    }
-                    "replconf" => {
-                        stream.write_all(OK_RESP).await.unwrap();
-                    }
-                    "psync" => {
-                        let command = RedisValue::String(format!(
-                            "FULLRESYNC {} 0",
-                            self.config.master_replid
-                        ));
-                        self.reply(stream, command.to_response().as_bytes(), false)
+                            self.reply(stream, OK_RESP, is_replica).await;
+                        }
+                        "get" => {
+                            let key = a[1].to_string(&bm);
+                            let value = self.get(&key);
+                            match value {
+                                Some(value) => {
+                                    self.reply(stream, value.to_response().as_bytes(), false)
+                                        .await;
+                                }
+                                None => {
+                                    self.reply(stream, NULL_RESP, false).await;
+                                }
+                            };
+                        }
+                        "docs" => {
+                            let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
+                            let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
+    
+                            self.reply(stream, docs_resp.as_bytes(), false).await;
+                        }
+                        "info" => {
+                            let arg = a[1].to_string(&bm);
+                            let info_resp = self.info(&arg).to_response();
+                            self.reply(stream, info_resp.as_bytes(), false).await;
+                        }
+                        "replconf" => {
+                            stream.write_all(OK_RESP).await.unwrap();
+                        }
+                        "psync" => {
+                            let command = RedisValue::String(format!(
+                                "FULLRESYNC {} 0",
+                                self.config.master_replid
+                            ));
+                            self.reply(stream, command.to_response().as_bytes(), false)
+                                .await;
+                            let rdb_content = self.rdb_dump();
+                            self.reply(
+                                stream,
+                                format!("${}\r\n", rdb_content.len()).as_bytes(),
+                                false,
+                            )
                             .await;
-                        let rdb_content = self.rdb_dump();
-                        self.reply(
-                            stream,
-                            format!("${}\r\n", rdb_content.len()).as_bytes(),
-                            false,
-                        )
-                        .await;
-                        self.reply(stream, &rdb_content, false).await;
-
-                        // At this point we know this connection is for a replica
-                        let mut rx = tx.subscribe();
-                        loop {
-                            let msg = rx.recv().await.unwrap();
-                            println!("Received message: {}", msg);
-                            stream
-                                .write_all(msg.as_bytes())
-                                .await
-                                .expect("failed to write to stream");
+                            self.reply(stream, &rdb_content, false).await;
+    
+                            // At this point we know this connection is from master -> replica 
+                            let mut rx = tx.as_ref().unwrap().subscribe();
+                            loop {
+                                let msg = rx.recv().await.unwrap();
+                                println!("Received message: {}", msg);
+                                stream
+                                    .write_all(msg.as_bytes())
+                                    .await
+                                    .expect("failed to write to stream");
+                            }
                         }
-                    }
-                    _ => {
-                        println!("Unknown command: {}", command);
-                        unimplemented!("No other commands implemented yet for array");
+                        _ => {
+                            println!("Unknown command for array: {}", command);
+                            unimplemented!("No other commands implemented yet for array");
+                        }
                     }
                 }
+                c => {
+                    println!("Unknown command: {}", c);
+                    unimplemented!("No other commands implemented yet");
+                }
             }
-            _ => unimplemented!("No other commands implemented yet"),
         }
-    }
+
+        }
 
     fn parse_command_line(&mut self, args: &Vec<String>) {
         let mut args_iter = args.iter();

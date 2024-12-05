@@ -10,7 +10,7 @@ use std::{
     vec,
 };
 mod parser;
-use parser::{RedisBufSplit, Parser};
+use parser::{Parser, RedisBufSplit};
 
 mod server;
 use server::{RedisServer, RedisValue};
@@ -42,7 +42,7 @@ async fn send_command_and_read_response(
     Ok(response)
 }
 
-async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<dyn Error>> {
+async fn handshake_master(stream: &mut TcpStream, server: Arc<RedisServer>) -> Result<(), Box<dyn Error>> {
     // PING command
     let ping_command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
     send_command_and_read_response(stream, ping_command).await?;
@@ -51,7 +51,7 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
     let replconf_listen_command = RedisValue::Array(vec![
         RedisValue::String("REPLCONF".to_string()),
         RedisValue::String("listening-port".to_string()),
-        RedisValue::String(port.to_string()),
+        RedisValue::String(server.config.port.to_string()),
     ]);
     send_command_and_read_response(stream, replconf_listen_command).await?;
 
@@ -77,17 +77,20 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
     let buf = BytesMut::from(resp.as_bytes());
     let mut i = 0;
     loop {
-        let (pos, word) = Parser::token(&buf, i).unwrap();
-        let word = word.to_string(&buf);
-        if word.starts_with("*"){
-            println!("Found SET command: {}", word);
+        if let Some( (pos, word)) = Parser::token(&buf, i) {
+            let word = word.to_string(&buf);
+            if word.starts_with("*") {
+                println!("Found SET command: {}", word);
+                println!("{}", String::from_utf8_lossy(buf[i..].as_ref()));
+                let bm = BytesMut::from(buf[i..].as_ref());
+                server.evaluate(bm, stream, None).await;
+                break;
+            }
+            i = pos;
+        } else {
             break;
         }
-        i = pos;
     }
-    println!("{}", String::from_utf8_lossy(buf[i..].as_ref()));
-        
-    
 
     Ok(())
 }
@@ -127,7 +130,7 @@ async fn main() {
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master(&mut stream, server_clone.config.port)
+            handshake_master(&mut stream, server_clone)
                 .await
                 .expect("Failed to handshake with master");
             println!(
@@ -161,6 +164,6 @@ async fn handle_connection(
         println!("Received: {}", String::from_utf8_lossy(&buffer));
         let bm = BytesMut::from(&buffer[0..n]);
         assert!(bm.len() > 0);
-        server.evaluate(bm, &mut stream, tx.clone()).await;
+        server.evaluate(bm, &mut stream, Some(tx.clone())).await;
     }
 }
