@@ -22,66 +22,55 @@ use std::error::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-async fn handshake_master_ping(stream: &mut TcpStream, port: u16) -> Result<(), Box<dyn Error>> {
-    let command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
-    stream
-        .write_all(command.to_response().as_bytes())
-        .await
-        .unwrap();
-    stream.flush().await.unwrap();
-    println!("Sent PING command to master");
-
-    let buf = &mut [0; 1024];
+async fn send_command_and_read_response(
+    stream: &mut TcpStream, 
+    command: RedisValue
+) -> Result<String, Box<dyn Error>> {
+    // Send the command
+    stream.write_all(command.to_response().as_bytes()).await?;
+    stream.flush().await?;
+    
+    // Read the response
+    let mut buf = [0; 1024];
     stream.readable().await?;
-    let n = stream.read(buf).await?;
-    let response = &buf[..n];
-    println!("Received response: {}", String::from_utf8_lossy(response));
+    let n = stream.read(&mut buf).await?;
+    let response = String::from_utf8_lossy(&buf[..n]).to_string();
+    
+    println!("Sent command: {:?}", command);
+    println!("Received response: {}", response);
 
-    // REPLCONF commands
-    let command = RedisValue::Array(vec![
+    Ok(response)
+}
+
+async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<dyn Error>> {
+    // PING command
+    let ping_command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
+    send_command_and_read_response(stream, ping_command).await?;
+
+    // REPLCONF listening-port command
+    let replconf_listen_command = RedisValue::Array(vec![
         RedisValue::String("REPLCONF".to_string()),
         RedisValue::String("listening-port".to_string()),
         RedisValue::String(port.to_string()),
     ]);
-    stream
-        .write_all(command.to_response().as_bytes())
-        .await
-        .unwrap();
-    stream.flush().await.unwrap();
-    stream.readable().await?;
-    let n = stream.read(buf).await?;
-    let response = &buf[..n];
-    println!("Received response: {}", String::from_utf8_lossy(response));
+    send_command_and_read_response(stream, replconf_listen_command).await?;
 
-    let command = RedisValue::Array(vec![
+    // REPLCONF capa command
+    let replconf_capa_command = RedisValue::Array(vec![
         RedisValue::String("REPLCONF".to_string()),
         RedisValue::String("capa".to_string()),
         RedisValue::String("psync2".to_string()),
     ]);
-    stream
-        .write_all(command.to_response().as_bytes())
-        .await
-        .unwrap();
-    stream.flush().await.unwrap();
-    println!("Sent REPLCONF commands to master");
-    stream.readable().await?;
-    let n = stream.read(buf).await?;
-    let response = &buf[..n];
-    println!("Received response: {}", String::from_utf8_lossy(response));
+    send_command_and_read_response(stream, replconf_capa_command).await?;
 
-    let command = RedisValue::Array(vec![
+    // PSYNC command
+    let psync_command = RedisValue::Array(vec![
         RedisValue::String("PSYNC".to_string()),
         RedisValue::String("?".to_string()),
         RedisValue::String("-1".to_string()),
     ]);
-    stream.write_all(command.to_response().as_bytes()).await.unwrap();
-    stream.flush().await.unwrap();
-    println!("Sent PSYNC command to master");
-    stream.readable().await?;
-    let n = stream.read(buf).await?;
-    let response = &buf[..n];
-    println!("Received response: {}", String::from_utf8_lossy(response));
-    
+    send_command_and_read_response(stream, psync_command).await?;
+
     Ok(())
 }
 
@@ -97,7 +86,7 @@ async fn main() {
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master_ping(&mut stream, server.config.port).await;
+            handshake_master(&mut stream, server.config.port).await.expect("Failed to handshake with master");
         });
         master_handle.await.expect("Failed to handshake with master");
     }
@@ -218,6 +207,9 @@ async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                             .await
                             .expect("failed to write to stream");
                     }
+                    "replconf" => {
+                        stream.write(OK_RESP).await.expect("failed to write to stream");
+                    },
                     _ => unimplemented!("No other commands implemented yet"),
                 }
             }
