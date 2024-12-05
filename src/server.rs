@@ -1,9 +1,12 @@
 use core::panic;
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::{fmt::Write, num::ParseIntError};
+
+// Empty RDB file
+const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -177,4 +180,17 @@ impl RedisServer {
             }
         }
     }
+
+    // For the purposes of this exercise, we'll just use the empty RDB const
+    pub fn rdb_dump(&self) -> Vec<u8> {
+        decode_hex(EMPTY_RDB_HEX).expect("Failed to decode empty RDB hex")
+    }
+}
+
+
+fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16))
+        .collect()
 }

@@ -213,6 +213,11 @@ async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                     "psync" => {
                         let command = RedisValue::String(format!("FULLRESYNC {} 0", server.config.master_replid));
                         stream.write_all(command.to_response().as_bytes()).await.expect("failed to write to stream");
+
+                        let rdb_content = server.rdb_dump();
+                        stream.write_all(format!("${}\r\n", rdb_content.len()).as_bytes()).await.expect("failed to write to stream");
+                        stream.write_all(&rdb_content).await.expect("failed to write to stream");
+
                     }
                     _ => {
                         println!("Unknown command: {}", command);
