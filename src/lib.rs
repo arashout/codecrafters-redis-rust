@@ -9,6 +9,10 @@ use tokio::net::{TcpListener, TcpStream};
 mod server;
 use server::{RedisServer, RedisValue};
 
+mod parser;
+
+mod macros;
+
 pub struct ThreadPool {
     workers: Vec<Worker>,
     sender: mpsc::Sender<Job>,
@@ -72,20 +76,6 @@ impl Worker {
     }
 }
 
-#[macro_export]
-macro_rules! cast {
-        ($target: expr, $pat: path) => {
-            {
-                if let $pat(a) = $target { // #1
-                    a
-                } else {
-                    panic!(
-                        "mismatch variant when cast to {}", 
-                        stringify!($pat)); // #2
-                }
-            }
-        };
-    }
 
 
 pub async fn send_command_and_read_response(

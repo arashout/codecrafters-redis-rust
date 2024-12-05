@@ -4,39 +4,39 @@ use redis_starter_rust::{cast, ThreadPool};
 use std::{
     env, fs,
     io::{prelude::*, BufReader, ErrorKind},
+    sync::{mpsc, Arc, Mutex},
     thread,
-    time::Duration, vec,
+    time::Duration,
+    vec,
 };
 mod parser;
 use parser::RedisBufSplit;
 
 mod server;
 use server::{RedisServer, RedisValue};
-use std::sync::Arc;
-
-const PONG_RESP: &[u8; 7] = b"+PONG\r\n";
-const OK_RESP: &[u8; 5] = b"+OK\r\n";
-const NULL_RESP: &[u8; 5] = b"$-1\r\n";
 
 use std::error::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::broadcast;
+
+const PROPAGATE_COMMANDS_CAPACITY: usize = 10;
 
 async fn send_command_and_read_response(
-    stream: &mut TcpStream, 
-    command: RedisValue
+    stream: &mut TcpStream,
+    command: RedisValue,
 ) -> Result<String, Box<dyn Error>> {
     // Send the command
     stream.write_all(command.to_response().as_bytes()).await?;
     stream.flush().await?;
     println!("Sent command: {:?}", command);
-    
+
     // Read the response
     let mut buf = [0; 1024];
     stream.readable().await?;
     let n = stream.read(&mut buf).await?;
     let response = String::from_utf8_lossy(&buf[..n]).to_string();
-    
+
     println!("Received response: {}", response);
 
     Ok(response)
@@ -71,6 +71,7 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
     ]);
     send_command_and_read_response(stream, psync_command).await?;
 
+    println!("Handshake with master completed successfully.");
     Ok(())
 }
 
@@ -78,39 +79,44 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
 async fn main() {
     let server = RedisServer::new(env::args().collect());
     let port = server.config.port;
+    let (tx, _rx) = broadcast::channel::<String>(PROPAGATE_COMMANDS_CAPACITY);
+    let sender = Arc::new(tx);
+    let server = Arc::new(server);
 
     if let Some((master_host, master_port)) = server.config.master_host_port.clone() {
+        let server = Arc::clone(&server);
         // Do handshake with master if this is a slave
         let master_handle = tokio::spawn(async move {
             // Use basic TCP connection to send PING command to master
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master(&mut stream, server.config.port).await.expect("Failed to handshake with master");
+            handshake_master(&mut stream, server.config.port)
+                .await
+                .expect("Failed to handshake with master");
         });
-        master_handle.await.expect("Failed to handshake with master");
+        master_handle
+            .await
+            .expect("Failed to handshake with master");
     }
 
-    let handle = tokio::spawn(async move {
-        let server = Arc::new(server);
-        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-            .await
-            .unwrap();
-        println!("Listening on port {}", port);
-        
-        loop {
-            while let Ok((stream, _)) = listener.accept().await {
-                let server = server.clone();
-                tokio::spawn(async move {
-                    handle_connection(server, stream).await;
-                });
-            }
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+        .await
+        .unwrap();
+    println!("Listening on port {}", port);
+
+    loop {
+        while let Ok((stream, _)) = listener.accept().await {
+            let server = Arc::clone(&server);
+            let sender = Arc::clone(&sender);
+            tokio::spawn(async move {
+                handle_connection(server, stream, sender).await;
+            });
         }
-    });
-    handle.await.expect("Failed to start server");
+    }
 }
 
-async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
+async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream, tx: Arc<broadcast::Sender<String>>) {
     // Loop over the stream's contents
     let mut buffer = [0; 1024];
     loop {
@@ -129,103 +135,6 @@ async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
         if bm.len() == 0 {
             continue;
         }
-        match buffer[0] {
-            b'*' => {
-                let res = parser::Parser::parse_array(&bm, 0)
-                    .expect("failed to parse array")
-                    .expect("Expected some result");
-                let a = cast!(res.1, RedisBufSplit::Array);
-                let command = a[0].to_string(&bm);
-                match command.to_lowercase().as_str() {
-                    "echo" => {
-                        let echo_str = a[1].to_string(&bm);
-                        let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
-                        stream
-                            .write(echo_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
-                    }
-                    "ping" => {
-                        stream
-                            .write(PONG_RESP)
-                            .await
-                            .expect("failed to write to stream");
-                    }
-                    "set" => {
-                        // Determine if there is an expiry by checking the number of arguments
-                        if a.len() == 5 {
-                            // Set the expiry
-                            let key = a[1].to_string(&bm);
-                            let value = a[2].to_string(&bm);
-                            let expiry = a[4].to_string(&bm);
-                            let expiry_millisecond =
-                                expiry.parse::<u64>().expect("failed to parse expiry");
-                            let expiry_duration = Duration::from_millis(expiry_millisecond);
-                            server.set(&key, RedisValue::String(value), Some(expiry_duration));
-                        } else {
-                            // No expiry
-                            let key = a[1].to_string(&bm);
-                            let value = a[2].to_string(&bm);
-                            server.set(&key, RedisValue::String(value), None);
-                        }
-                        stream
-                            .write(OK_RESP)
-                            .await
-                            .expect("failed to write to stream");
-                    }
-                    "get" => {
-                        let key = a[1].to_string(&bm);
-                        let value = server.get(&key);
-                        match value {
-                            Some(value) => {
-                                stream
-                                    .write(value.to_response().as_bytes())
-                                    .await
-                                    .expect("failed to write to stream");
-                            }
-                            None => {
-                                stream
-                                    .write(NULL_RESP)
-                                    .await
-                                    .expect("failed to write to stream");
-                            }
-                        }
-                    }
-                    "docs" => {
-                        let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
-                        let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
-                        stream
-                            .write(docs_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
-                    }
-                    "info" => {
-                        let arg = a[1].to_string(&bm);
-                        let info_resp = server.info(&arg).to_response();
-                        stream
-                            .write(info_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
-                    }
-                    "replconf" => {
-                        stream.write(OK_RESP).await.expect("failed to write to stream");
-                    },
-                    "psync" => {
-                        let command = RedisValue::String(format!("FULLRESYNC {} 0", server.config.master_replid));
-                        stream.write_all(command.to_response().as_bytes()).await.expect("failed to write to stream");
-
-                        let rdb_content = server.rdb_dump();
-                        stream.write_all(format!("${}\r\n", rdb_content.len()).as_bytes()).await.expect("failed to write to stream");
-                        stream.write_all(&rdb_content).await.expect("failed to write to stream");
-
-                    }
-                    _ => {
-                        println!("Unknown command: {}", command);
-                        unimplemented!("No other commands implemented yet for array");
-                    }
-                }
-            }
-            _ => unimplemented!("No other commands implemented yet"),
-        }
+        server.evaluate(bm, &mut stream, tx.clone()).await;
     }
 }

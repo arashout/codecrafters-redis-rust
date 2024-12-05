@@ -1,12 +1,22 @@
-use core::panic;
+use bytes::BytesMut;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use std::vec;
 use std::{fmt::Write, num::ParseIntError};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::broadcast;
+
+use crate::cast;
+use crate::parser;
 
 // Empty RDB file
 const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+
+const PONG_RESP: &[u8; 7] = b"+PONG\r\n";
+const OK_RESP: &[u8; 5] = b"+OK\r\n";
+const NULL_RESP: &[u8; 5] = b"$-1\r\n";
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
@@ -24,7 +34,7 @@ impl RedisValue {
             RedisValue::Array(a) => {
                 let mut response = String::from("*");
                 response.push_str(format!("{}\r\n", a.len()).as_str());
-                for (i, v) in a.iter().enumerate() {
+                for (_, v) in a.iter().enumerate() {
                     response.push_str(&v.to_response());
                 }
                 response
@@ -106,16 +116,13 @@ impl RedisServer {
         None
     }
 
-    pub fn set(&self, key: &str, value: RedisValue, ttl: Option<Duration>) {
+    pub fn set(&self, key: &str, value: RedisValue, duration: Option<Duration>) {
         let mut db = self.db.lock().unwrap();
-        if ttl.is_some() {
-            db.insert(
-                key.to_string(),
-                (value, Some(Instant::now() + ttl.unwrap())),
-            );
-        } else {
-            db.insert(key.to_string(), (value, None));
+        let mut ttl = None;
+        if duration.is_some() {
+            ttl = Some(Instant::now() + duration.unwrap());
         }
+        db.insert(key.to_string(), (value, ttl));
     }
 
     pub fn info(&self, section: &str) -> RedisValue {
@@ -132,6 +139,137 @@ impl RedisServer {
                 ))
             }
             _ => RedisValue::Null,
+        }
+    }
+
+    pub async fn evaluate(&self, bm: BytesMut, stream: &mut tokio::net::TcpStream, tx: Arc<broadcast::Sender<String>>) {
+        match bm[0] {
+            b'*' => {
+                let res = parser::Parser::parse_array(&bm, 0)
+                    .expect("failed to parse array")
+                    .expect("Expected some result");
+                let a = cast!(res.1, parser::RedisBufSplit::Array);
+                let command = a[0].to_string(&bm);
+                match command.to_lowercase().as_str() {
+                    "echo" => {
+                        let echo_str = a[1].to_string(&bm);
+                        let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
+                        stream
+                            .write(echo_resp.as_bytes())
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "ping" => {
+                        stream
+                            .write(PONG_RESP)
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "set" => {
+                        if self.config.master_host_port.is_none() {
+                            let s = String::from_utf8_lossy(&bm);
+                            println!("Sending broadcast message: {}", s);
+                            tx.send(s.into_owned()).expect("failed to send to broadcast");
+                        }
+                        // Determine if there is an expiry by checking the number of arguments
+                        if a.len() == 5 {
+                            // Set the expiry
+                            let key = a[1].to_string(&bm);
+                            let value = a[2].to_string(&bm);
+                            let expiry = a[4].to_string(&bm);
+                            let expiry_millisecond =
+                                expiry.parse::<u64>().expect("failed to parse expiry");
+                            let expiry_duration = Duration::from_millis(expiry_millisecond);
+                            self.set(&key, RedisValue::String(value), Some(expiry_duration));
+                        } else {
+                            // No expiry
+                            let key = a[1].to_string(&bm);
+                            let value = a[2].to_string(&bm);
+                            self.set(&key, RedisValue::String(value), None);
+                        }
+                        stream
+                            .write(OK_RESP)
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "get" => {
+                        let key = a[1].to_string(&bm);
+                        let value = self.get(&key);
+                        match value {
+                            Some(value) => {
+                                stream
+                                    .write(value.to_response().as_bytes())
+                                    .await
+                                    .expect("failed to write to stream");
+                            }
+                            None => {
+                                stream
+                                    .write(NULL_RESP)
+                                    .await
+                                    .expect("failed to write to stream");
+                            }
+                        }
+                    }
+                    "docs" => {
+                        let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
+                        let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
+                        stream
+                            .write(docs_resp.as_bytes())
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "info" => {
+                        let arg = a[1].to_string(&bm);
+                        let info_resp = self.info(&arg).to_response();
+                        stream
+                            .write(info_resp.as_bytes())
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "replconf" => {
+                        stream
+                            .write(OK_RESP)
+                            .await
+                            .expect("failed to write to stream");
+                    }
+                    "psync" => {
+                        let command = RedisValue::String(format!(
+                            "FULLRESYNC {} 0",
+                            self.config.master_replid
+                        ));
+                        stream
+                            .write_all(command.to_response().as_bytes())
+                            .await
+                            .expect("failed to write to stream");
+
+                        let rdb_content = self.rdb_dump();
+                        stream
+                            .write_all(format!("${}\r\n", rdb_content.len()).as_bytes())
+                            .await
+                            .expect("failed to write to stream");
+                        stream
+                            .write_all(&rdb_content)
+                            .await
+                            .expect("failed to write to stream");
+                        
+                        // At this point we know this connection is for a replica
+                        let mut rx = tx.subscribe();
+                        loop {
+                            let msg = rx.recv().await.unwrap();
+                            println!("Received message: {}", msg);
+                            stream
+                                .write_all(msg.as_bytes())
+                                .await
+                                .expect("failed to write to stream");
+                        }
+                    }
+                    _ => {
+                        println!("Unknown command: {}", command);
+                        unimplemented!("No other commands implemented yet for array");
+                    }
+                }
+            }
+            _ => unimplemented!("No other commands implemented yet"),
         }
     }
 
@@ -186,7 +324,6 @@ impl RedisServer {
         decode_hex(EMPTY_RDB_HEX).expect("Failed to decode empty RDB hex")
     }
 }
-
 
 fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
     (0..s.len())
