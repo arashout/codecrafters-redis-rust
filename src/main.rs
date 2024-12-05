@@ -10,7 +10,7 @@ use std::{
     vec,
 };
 mod parser;
-use parser::RedisBufSplit;
+use parser::{RedisBufSplit, Parser};
 
 mod server;
 use server::{RedisServer, RedisValue};
@@ -69,9 +69,26 @@ async fn handshake_master(stream: &mut TcpStream, port: u16) -> Result<(), Box<d
         RedisValue::String("?".to_string()),
         RedisValue::String("-1".to_string()),
     ]);
-    send_command_and_read_response(stream, psync_command).await?;
-
+    let resp = send_command_and_read_response(stream, psync_command).await?;
     println!("Handshake with master completed successfully.");
+    // Propagation of SET commands come through this stream
+    // Also the previous response might contain a bunch of SET commands
+    // so we need to parse them and propagate them to the slave
+    let buf = BytesMut::from(resp.as_bytes());
+    let mut i = 0;
+    loop {
+        let (pos, word) = Parser::token(&buf, i).unwrap();
+        let word = word.to_string(&buf);
+        if word.starts_with("*"){
+            println!("Found SET command: {}", word);
+            break;
+        }
+        i = pos;
+    }
+    println!("{}", buf[i..].to_string());
+        
+    
+
     Ok(())
 }
 

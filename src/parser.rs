@@ -11,13 +11,13 @@ pub struct Parser {
 ///
 /// Used for zero-copy redis values.
 #[derive(Debug, PartialEq, Clone, Copy)]
-struct BufSplit(usize, usize);
+pub struct BufSplit(usize, usize);
 impl BufSplit {
     fn len(&self) -> usize {
         self.1 - self.0
     }
 
-    fn to_string(&self, src: &[u8]) -> String {
+    pub fn to_string(&self, src: &[u8]) -> String {
         String::from_utf8_lossy(&src[self.0..self.1]).to_string()
     }
 }
@@ -96,7 +96,7 @@ impl Parser {
     //     unimplemented!()
     // }
 
-    fn token(src: &BytesMut, index: usize) -> Option<(usize, BufSplit)> {
+    pub fn token(src: &BytesMut, index: usize) -> Option<(usize, BufSplit)> {
         let start = index;
         let mut end = index;
         while end < src.len() && src[end] != b'\r' {
@@ -166,6 +166,7 @@ impl Parser {
             None => Ok(None),
         }
     }
+
 }
 
 #[cfg(test)]
@@ -258,4 +259,50 @@ mod tests {
             _ => panic!("expected string"),
         }
     }
-}
+
+    #[test]
+    fn test_token() {
+        let pysnc_resp = b"+FULLRESYNC 75cd7bc10c49047e0d163660f3b90625b1af31dc 0\r\n$88\r\nREDIS0011\xEF\xBF\xBD       redis-ver7.2.0\xEF\xBF\xBD\r\nredis-bits\xEF\xBF\xBD@\xEF\xBF\xBDctime\xEF\xBF\xBD\xEF\xBF\xBDused-mem\xC2\xB0\xEF\xBF\xBDaof-base\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBDn;\xEF\xBF\xBD\xEF\xBF\xBDZ\xEF\xBF\xBD\r\n*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n123\r\n*3\r\n$3\r\nSET\r\n$3\r\nbar\r\n$3\r\n456\r\n*3\r\n$3\r\nSET\r\n$3\r\nbaz\r\n$3\r\n789\r\n";
+        let mut buf = BytesMut::from(&pysnc_resp[..]);
+        let mut i = 0;
+        loop {
+            let (pos, word) = Parser::token(&mut buf, i).unwrap();
+            let word = word.to_string(&buf);
+            if word.starts_with("*"){
+                break;
+            }
+            i = pos;
+        }
+        let (i, split) = Parser::parse_array(&mut buf, i).unwrap().unwrap();
+        match split {
+            RedisBufSplit::Array(words) => {
+                assert_eq!(words.len(), 3);
+                assert_eq!(words[0].to_string(&buf), "SET");
+                assert_eq!(words[1].to_string(&buf), "foo");
+                assert_eq!(words[2].to_string(&buf), "123");
+            }
+            _ => panic!("expected array"),
+        }
+        let (i, split) = Parser::parse_array(&mut buf, i).unwrap().unwrap();
+        match split {
+            RedisBufSplit::Array(words) => {
+                assert_eq!(words.len(), 3);
+                assert_eq!(words[0].to_string(&buf), "SET");
+                assert_eq!(words[1].to_string(&buf), "bar");
+                assert_eq!(words[2].to_string(&buf), "456");
+            }
+            _ => panic!("expected array"),
+        }
+        let (i, split) = Parser::parse_array(&mut buf, i).unwrap().unwrap();
+        match split {
+            RedisBufSplit::Array(words) => {
+                assert_eq!(words.len(), 3);
+                assert_eq!(words[0].to_string(&buf), "SET");
+                assert_eq!(words[1].to_string(&buf), "baz");
+                assert_eq!(words[2].to_string(&buf), "789");
+            }
+            _ => panic!("expected array"),
+        }
+        
+
+    }}
