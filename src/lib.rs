@@ -3,6 +3,12 @@ use std::{
     thread,
 };
 
+use std::error::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+mod server;
+use server::{RedisServer, RedisValue};
+
 pub struct ThreadPool {
     workers: Vec<Worker>,
     sender: mpsc::Sender<Job>,
@@ -80,3 +86,24 @@ macro_rules! cast {
             }
         };
     }
+
+
+pub async fn send_command_and_read_response(
+    stream: &mut TcpStream, 
+    command: RedisValue
+) -> Result<String, Box<dyn Error>> {
+    // Send the command
+    stream.write_all(command.to_response().as_bytes()).await?;
+    stream.flush().await?;
+    println!("Sent command: {:?}", command);
+    
+    // Read the response
+    let mut buf = [0; 1024];
+    stream.readable().await?;
+    let n = stream.read(&mut buf).await?;
+    let response = String::from_utf8_lossy(&buf[..n]).to_string();
+    
+    println!("Received response: {}", response);
+
+    Ok(response)
+}

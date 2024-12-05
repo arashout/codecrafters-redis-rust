@@ -5,7 +5,7 @@ use std::{
     env, fs,
     io::{prelude::*, BufReader, ErrorKind},
     thread,
-    time::Duration,
+    time::Duration, vec,
 };
 mod parser;
 use parser::RedisBufSplit;
@@ -29,6 +29,7 @@ async fn send_command_and_read_response(
     // Send the command
     stream.write_all(command.to_response().as_bytes()).await?;
     stream.flush().await?;
+    println!("Sent command: {:?}", command);
     
     // Read the response
     let mut buf = [0; 1024];
@@ -36,7 +37,6 @@ async fn send_command_and_read_response(
     let n = stream.read(&mut buf).await?;
     let response = String::from_utf8_lossy(&buf[..n]).to_string();
     
-    println!("Sent command: {:?}", command);
     println!("Received response: {}", response);
 
     Ok(response)
@@ -210,7 +210,14 @@ async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream) {
                     "replconf" => {
                         stream.write(OK_RESP).await.expect("failed to write to stream");
                     },
-                    _ => unimplemented!("No other commands implemented yet"),
+                    "psync" => {
+                        let command = RedisValue::String(format!("FULLRESYNC {} 0", server.config.master_replid));
+                        stream.write_all(command.to_response().as_bytes()).await.expect("failed to write to stream");
+                    }
+                    _ => {
+                        println!("Unknown command: {}", command);
+                        unimplemented!("No other commands implemented yet for array");
+                    }
                 }
             }
             _ => unimplemented!("No other commands implemented yet"),
