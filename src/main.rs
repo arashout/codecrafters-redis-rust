@@ -30,7 +30,12 @@ async fn handshake_master_ping(stream: &mut TcpStream, port: u16) -> Result<(), 
         .unwrap();
     stream.flush().await.unwrap();
     println!("Sent PING command to master");
+
+    let buf = &mut [0; 1024];
     stream.readable().await?;
+    let n = stream.read(buf).await?;
+    let response = &buf[..n];
+    println!("Received response: {}", String::from_utf8_lossy(response));
 
     // REPLCONF commands
     let command = RedisValue::Array(vec![
@@ -44,6 +49,9 @@ async fn handshake_master_ping(stream: &mut TcpStream, port: u16) -> Result<(), 
         .unwrap();
     stream.flush().await.unwrap();
     stream.readable().await?;
+    let n = stream.read(buf).await?;
+    let response = &buf[..n];
+    println!("Received response: {}", String::from_utf8_lossy(response));
 
     let command = RedisValue::Array(vec![
         RedisValue::String("REPLCONF".to_string()),
@@ -55,8 +63,11 @@ async fn handshake_master_ping(stream: &mut TcpStream, port: u16) -> Result<(), 
         .await
         .unwrap();
     stream.flush().await.unwrap();
-    stream.readable().await?;
     println!("Sent REPLCONF commands to master");
+    stream.readable().await?;
+    let n = stream.read(buf).await?;
+    let response = &buf[..n];
+    println!("Received response: {}", String::from_utf8_lossy(response));
     Ok(())
 }
 
@@ -65,8 +76,7 @@ async fn main() {
     let server = RedisServer::new(env::args().collect());
     let port = server.config.port;
 
-    if server.config.master_host_port.is_some() {
-        let (master_host, master_port) = server.config.master_host_port.clone().unwrap();
+    if let Some((master_host, master_port)) = server.config.master_host_port.clone() {
         // Do handshake with master if this is a slave
         let master_handle = tokio::spawn(async move {
             // Use basic TCP connection to send PING command to master
@@ -75,6 +85,7 @@ async fn main() {
                 .expect("Failed to connect to master");
             handshake_master_ping(&mut stream, server.config.port).await;
         });
+        master_handle.await.expect("Failed to handshake with master");
     }
 
     let handle = tokio::spawn(async move {
