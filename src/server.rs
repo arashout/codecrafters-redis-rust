@@ -142,7 +142,23 @@ impl RedisServer {
         }
     }
 
-    pub async fn evaluate(&self, bm: BytesMut, stream: &mut tokio::net::TcpStream, tx: Arc<broadcast::Sender<String>>) {
+    async fn reply(&self, stream: &mut tokio::net::TcpStream, resp: &[u8], no_response: bool) {
+        if no_response {
+            return;
+        }
+        stream
+            .write_all(resp)
+            .await
+            .expect("failed to write to stream");
+    }
+
+    pub async fn evaluate(
+        &self,
+        bm: BytesMut,
+        stream: &mut tokio::net::TcpStream,
+        tx: Arc<broadcast::Sender<String>>,
+    ) {
+        let is_replica = self.config.master_host_port.is_some();
         match bm[0] {
             b'*' => {
                 let res = parser::Parser::parse_array(&bm, 0)
@@ -154,22 +170,17 @@ impl RedisServer {
                     "echo" => {
                         let echo_str = a[1].to_string(&bm);
                         let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
-                        stream
-                            .write(echo_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
+                        self.reply(stream, echo_resp.as_bytes(), false).await;
                     }
                     "ping" => {
-                        stream
-                            .write(PONG_RESP)
-                            .await
-                            .expect("failed to write to stream");
+                        self.reply(stream, PONG_RESP, false).await;
                     }
                     "set" => {
                         if self.config.master_host_port.is_none() {
                             let s = String::from_utf8_lossy(&bm);
                             println!("Sending broadcast message: {}", s);
-                            tx.send(s.into_owned()).expect("failed to send to broadcast");
+                            tx.send(s.into_owned())
+                                .expect("failed to send to broadcast");
                         }
                         // Determine if there is an expiry by checking the number of arguments
                         if a.len() == 5 {
@@ -187,71 +198,51 @@ impl RedisServer {
                             let value = a[2].to_string(&bm);
                             self.set(&key, RedisValue::String(value), None);
                         }
-                        stream
-                            .write(OK_RESP)
-                            .await
-                            .expect("failed to write to stream");
+                        self.reply(stream, OK_RESP, is_replica).await;
                     }
                     "get" => {
                         let key = a[1].to_string(&bm);
                         let value = self.get(&key);
                         match value {
                             Some(value) => {
-                                stream
-                                    .write(value.to_response().as_bytes())
-                                    .await
-                                    .expect("failed to write to stream");
+                                self.reply(stream, value.to_response().as_bytes(), false)
+                                    .await;
                             }
                             None => {
-                                stream
-                                    .write(NULL_RESP)
-                                    .await
-                                    .expect("failed to write to stream");
+                                self.reply(stream, NULL_RESP, false).await;
                             }
-                        }
+                        };
                     }
                     "docs" => {
                         let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
                         let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
-                        stream
-                            .write(docs_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
+
+                        self.reply(stream, docs_resp.as_bytes(), false).await;
                     }
                     "info" => {
                         let arg = a[1].to_string(&bm);
                         let info_resp = self.info(&arg).to_response();
-                        stream
-                            .write(info_resp.as_bytes())
-                            .await
-                            .expect("failed to write to stream");
+                        self.reply(stream, info_resp.as_bytes(), false).await;
                     }
                     "replconf" => {
-                        stream
-                            .write(OK_RESP)
-                            .await
-                            .expect("failed to write to stream");
+                        stream.write_all(OK_RESP).await.unwrap();
                     }
                     "psync" => {
                         let command = RedisValue::String(format!(
                             "FULLRESYNC {} 0",
                             self.config.master_replid
                         ));
-                        stream
-                            .write_all(command.to_response().as_bytes())
-                            .await
-                            .expect("failed to write to stream");
-
+                        self.reply(stream, command.to_response().as_bytes(), false)
+                            .await;
                         let rdb_content = self.rdb_dump();
-                        stream
-                            .write_all(format!("${}\r\n", rdb_content.len()).as_bytes())
-                            .await
-                            .expect("failed to write to stream");
-                        stream
-                            .write_all(&rdb_content)
-                            .await
-                            .expect("failed to write to stream");
-                        
+                        self.reply(
+                            stream,
+                            format!("${}\r\n", rdb_content.len()).as_bytes(),
+                            false,
+                        )
+                        .await;
+                        self.reply(stream, &rdb_content, false).await;
+
                         // At this point we know this connection is for a replica
                         let mut rx = tx.subscribe();
                         loop {

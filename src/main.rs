@@ -80,43 +80,55 @@ async fn main() {
     let server = RedisServer::new(env::args().collect());
     let port = server.config.port;
     let (tx, _rx) = broadcast::channel::<String>(PROPAGATE_COMMANDS_CAPACITY);
-    let sender = Arc::new(tx);
-    let server = Arc::new(server);
+    let arc_sender = Arc::new(tx);
+    let arc_server = Arc::new(server);
 
-    if let Some((master_host, master_port)) = server.config.master_host_port.clone() {
-        let server = Arc::clone(&server);
+    // Start serving connections in a separate thread
+    let server_clone = Arc::clone(&arc_server);
+    let server_handle = tokio::spawn(async move {
+        let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
+            .await
+            .unwrap();
+        println!("Listening on port {}", port);
+
+        loop {
+            while let Ok((stream, _)) = listener.accept().await {
+                let sender = Arc::clone(&arc_sender);
+                println!("peer_address {:?}", stream.peer_addr().unwrap());
+                let server_clone = Arc::clone(&server_clone);
+                tokio::spawn(async move {
+                    handle_connection(server_clone, stream, sender).await;
+                });
+            }
+        }
+    });
+
+    let server_clone = Arc::clone(&arc_server);
+    if let Some((master_host, master_port)) = server_clone.config.master_host_port.clone() {
         // Do handshake with master if this is a slave
         let master_handle = tokio::spawn(async move {
-            // Use basic TCP connection to send PING command to master
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master(&mut stream, server.config.port)
+            handshake_master(&mut stream, server_clone.config.port)
                 .await
                 .expect("Failed to handshake with master");
+            println!(
+                "peer_address master_handshake{:?}",
+                stream.peer_addr().unwrap()
+            );
         });
         master_handle
             .await
             .expect("Failed to handshake with master");
     }
-
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
-        .await
-        .unwrap();
-    println!("Listening on port {}", port);
-
-    loop {
-        while let Ok((stream, _)) = listener.accept().await {
-            let server = Arc::clone(&server);
-            let sender = Arc::clone(&sender);
-            tokio::spawn(async move {
-                handle_connection(server, stream, sender).await;
-            });
-        }
-    }
+    server_handle.await.unwrap();
 }
-
-async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream, tx: Arc<broadcast::Sender<String>>) {
+async fn handle_connection(
+    server: Arc<RedisServer>,
+    mut stream: TcpStream,
+    tx: Arc<broadcast::Sender<String>>,
+) {
     // Loop over the stream's contents
     let mut buffer = [0; 1024];
     loop {
@@ -127,9 +139,8 @@ async fn handle_connection(server: Arc<RedisServer>, mut stream: TcpStream, tx: 
             .expect("failed to read from stream");
         // Print the contents to stdout
         println!("Received: {}", String::from_utf8_lossy(&buffer));
-        // If we didn't get any bytes then break the loop
         if n == 0 {
-            break;
+            continue;
         }
         let bm = BytesMut::from(&buffer[0..n]);
         if bm.len() == 0 {
