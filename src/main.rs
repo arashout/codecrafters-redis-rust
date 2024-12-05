@@ -68,6 +68,20 @@ async fn handshake_master_ping(stream: &mut TcpStream, port: u16) -> Result<(), 
     let n = stream.read(buf).await?;
     let response = &buf[..n];
     println!("Received response: {}", String::from_utf8_lossy(response));
+
+    let command = RedisValue::Array(vec![
+        RedisValue::String("PSYNC".to_string()),
+        RedisValue::String("?".to_string()),
+        RedisValue::String("-1".to_string()),
+    ]);
+    stream.write_all(command.to_response().as_bytes()).await.unwrap();
+    stream.flush().await.unwrap();
+    println!("Sent PSYNC command to master");
+    stream.readable().await?;
+    let n = stream.read(buf).await?;
+    let response = &buf[..n];
+    println!("Received response: {}", String::from_utf8_lossy(response));
+    
     Ok(())
 }
 
