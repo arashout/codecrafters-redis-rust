@@ -93,8 +93,8 @@ async fn main() {
 
         loop {
             while let Ok((stream, _)) = listener.accept().await {
-                let sender = Arc::clone(&arc_sender);
                 println!("peer_address {:?}", stream.peer_addr().unwrap());
+                let sender = Arc::clone(&arc_sender);
                 let server_clone = Arc::clone(&server_clone);
                 tokio::spawn(async move {
                     handle_connection(server_clone, stream, sender).await;
@@ -114,7 +114,7 @@ async fn main() {
                 .await
                 .expect("Failed to handshake with master");
             println!(
-                "peer_address master_handshake{:?}",
+                "peer_address master_handshake {:?}",
                 stream.peer_addr().unwrap()
             );
         });
@@ -129,23 +129,21 @@ async fn handle_connection(
     mut stream: TcpStream,
     tx: Arc<broadcast::Sender<String>>,
 ) {
-    // Loop over the stream's contents
-    let mut buffer = [0; 1024];
     loop {
+        let mut buffer = [0; 1024];
         // Read up to 1024 bytes from the stream
         let n = stream
             .read(&mut buffer)
             .await
             .expect("failed to read from stream");
+        if n == 0 {
+            println!("No data received");
+            continue;
+        }
         // Print the contents to stdout
         println!("Received: {}", String::from_utf8_lossy(&buffer));
-        if n == 0 {
-            continue;
-        }
         let bm = BytesMut::from(&buffer[0..n]);
-        if bm.len() == 0 {
-            continue;
-        }
+        assert!(bm.len() > 0);
         server.evaluate(bm, &mut stream, tx.clone()).await;
     }
 }

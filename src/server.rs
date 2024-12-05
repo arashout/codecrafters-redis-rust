@@ -146,6 +146,7 @@ impl RedisServer {
         if no_response {
             return;
         }
+        println!("Sending Reply: {}", String::from_utf8_lossy(resp));
         stream
             .write_all(resp)
             .await
