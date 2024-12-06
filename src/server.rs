@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use crate::cast;
 use crate::log::Logger;
-use crate::parser;
+use crate::parser::{self, Parser};
 
 // Empty RDB file
 const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
@@ -266,6 +266,11 @@ impl RedisServer {
                             unimplemented!("No other commands implemented yet for array");
                         }
                     }
+                }
+                b'$' => {
+                    let r = Parser::parse_bulk_string(&bm, pos).expect("failed to parse bulk string").unwrap();
+                    logger.log(&format!("Bulk string (no action taken): {}", r.1.to_string(&bm)));
+                    pos = r.0;
                 }
                 c => {
                     logger.log(&format!("Unknown command: {} entire bytes {}", c, String::from_utf8_lossy(&bm).to_string()));
