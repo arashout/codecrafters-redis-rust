@@ -92,6 +92,7 @@ async fn handshake_master(stream: &mut TcpStream, server: Arc<RedisServer>) -> R
             break;
         }
     }
+    logger.log("Closing handshake connection with master.");
 
     Ok(())
 }
