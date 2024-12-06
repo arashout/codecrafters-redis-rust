@@ -40,10 +40,7 @@ async fn send_command_and_read_response(
     Ok(response)
 }
 
-async fn handshake_master(stream: &mut TcpStream, server: Arc<RedisServer>) -> Result<(), Box<dyn Error>> {
-    let mut logger = Logger::new();
-    logger = logger.with("replica", "true");
-
+async fn handshake_master(logger: &Logger, stream: &mut TcpStream, server: Arc<RedisServer>) -> Result<(), Box<dyn Error>> {
     // PING command
     let ping_command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
     send_command_and_read_response(&logger, stream, ping_command).await?;
@@ -92,6 +89,16 @@ async fn handshake_master(stream: &mut TcpStream, server: Arc<RedisServer>) -> R
             break;
         }
     }
+    // Try and poll the stream for new commands
+    loop {
+        let mut buf = [0; 1024];
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let buf = BytesMut::from(&buf[..n]);
+        server.evaluate(&logger, buf, stream, None).await;
+    }
     logger.log("Closing handshake connection with master.");
 
     Ok(())
@@ -135,17 +142,17 @@ async fn main() {
     let server_clone = Arc::clone(&arc_server);
     if let Some((master_host, master_port)) = server_clone.config.master_host_port.clone() {
         // Do handshake with master if this is a slave
+        let logger = Logger::new();
+        let logger = logger.with("replica", "true");
         let master_handle = tokio::spawn(async move {
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master(&mut stream, server_clone)
+            handshake_master(&logger, &mut stream, server_clone)
                 .await
                 .expect("Failed to handshake with master");
-            println!(
-                "peer_address master_handshake {:?}",
-                stream.peer_addr().unwrap()
-            );
+            logger.log(&format!("peer_address master_handshake {:?}", stream.peer_addr().unwrap()));
+
         });
         master_handle
             .await

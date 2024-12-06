@@ -268,7 +268,7 @@ impl RedisServer {
                     }
                 }
                 c => {
-                    logger.log(&format!("Unknown command: {}", c));
+                    logger.log(&format!("Unknown command: {} entire bytes {}", c, String::from_utf8_lossy(&bm).to_string()));
                     unimplemented!("No other commands implemented yet");
                 }
             }
