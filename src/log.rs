@@ -18,7 +18,9 @@ impl Logger {
             s.push_str(&format!("[{}:{}] ", k, v));
         }
         s.push_str(msg);
-        println!("{}", s);
+        let final_string = s.escape_default().to_string();
+        print!("{}", final_string.replace("\\u{0}", ""));
+        println!();
     }
 
     pub fn with(&self, key: &str, value: &str) -> Logger{

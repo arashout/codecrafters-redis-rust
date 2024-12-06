@@ -40,7 +40,10 @@ async fn send_command_and_read_response(
     Ok(response)
 }
 
-async fn handshake_master(logger: &Logger, stream: &mut TcpStream, server: Arc<RedisServer>) -> Result<(), Box<dyn Error>> {
+async fn replication_connection(logger: &Logger, stream: &mut TcpStream, server: Arc<RedisServer>) -> Result<(), Box<dyn Error>> {
+    /// This is the connection that handles the handshake between master and slace
+    /// The established connection is used to send the replication data to the slave
+    
     // PING command
     let ping_command = RedisValue::Array(vec![RedisValue::String("PING".to_string())]);
     send_command_and_read_response(&logger, stream, ping_command).await?;
@@ -77,8 +80,8 @@ async fn handshake_master(logger: &Logger, stream: &mut TcpStream, server: Arc<R
     loop {
         if let Some( (pos, word)) = Parser::token(&buf, i) {
             let word = word.to_string(&buf);
-            if word.starts_with("*") {
-                logger.log(&format!("Found SET command: {}", word));
+            if word.starts_with("*") && word[1..].parse::<usize>().is_ok() {
+                logger.log(&format!("Found Redis Array start: {}", word));
                 println!("{}", String::from_utf8_lossy(buf[i..].as_ref()));
                 let bm = BytesMut::from(buf[i..].as_ref());
                 server.evaluate(&logger, bm, stream, None).await;
@@ -148,7 +151,7 @@ async fn main() {
             let mut stream = TcpStream::connect((master_host.clone(), master_port.clone()))
                 .await
                 .expect("Failed to connect to master");
-            handshake_master(&logger, &mut stream, server_clone)
+            replication_connection(&logger, &mut stream, server_clone)
                 .await
                 .expect("Failed to handshake with master");
             logger.log(&format!("peer_address master_handshake {:?}", stream.peer_addr().unwrap()));

@@ -19,6 +19,9 @@ const PONG_RESP: &[u8; 7] = b"+PONG\r\n";
 const OK_RESP: &[u8; 5] = b"+OK\r\n";
 const NULL_RESP: &[u8; 5] = b"$-1\r\n";
 
+// Commands
+
+
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
     String(String),
@@ -231,7 +234,29 @@ impl RedisServer {
                             self.reply(&logger, stream, info_resp.as_bytes(), false).await;
                         }
                         "replconf" => {
-                            stream.write_all(OK_RESP).await.unwrap();
+                            match a[1].to_string(&bm).to_lowercase().as_str() {
+                                "getack" => {
+                                    if &a[2].to_string(&bm) == &"*" {
+                                        let response_command = RedisValue::Array(
+                                            vec![
+                                                RedisValue::String("REPLCONF".to_string()),
+                                                RedisValue::String("ACK".to_string()),
+                                                RedisValue::String("0".to_string()),
+                                            ],
+                                        );
+                                        let response = response_command.to_response();
+                                        self.reply(&logger, stream, response.as_bytes(), false).await;
+                                    } else {
+                                        unimplemented!("Only support REPLCONF ACK * for now");
+                                    }
+                                },
+                                "ack" => {
+                                    logger.log(&format!("Received an REPLCONF ACK from replica"));
+                                }
+                                _ => {
+                                    self.reply(&logger, stream, OK_RESP, false).await;
+                                }
+                            }
                         }
                         "psync" => {
                             let command = RedisValue::String(format!(
