@@ -178,7 +178,6 @@ async fn handle_connection(
             .await
             .expect("failed to read from stream");
         if n == 0 {
-            logger.log("No data received");
             continue;
         }
         // Print the contents to stdout
