@@ -9,6 +9,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast;
 
 use crate::cast;
+use crate::log::Logger;
 use crate::parser;
 
 // Empty RDB file
@@ -142,11 +143,11 @@ impl RedisServer {
         }
     }
 
-    async fn reply(&self, stream: &mut tokio::net::TcpStream, resp: &[u8], no_response: bool) {
+    async fn reply(&self, logger: &Logger, stream: &mut tokio::net::TcpStream, resp: &[u8], no_response: bool) {
         if no_response {
             return;
         }
-        println!("Sending Reply: {}", String::from_utf8_lossy(resp));
+        logger.log(&format!("Sending Reply: {}", String::from_utf8_lossy(resp)));
         stream
             .write_all(resp)
             .await
@@ -155,6 +156,7 @@ impl RedisServer {
 
     pub async fn evaluate(
         &self,
+        logger: &Logger,
         bm: BytesMut,
         stream: &mut tokio::net::TcpStream,
         tx: Option<Arc<broadcast::Sender<String>>>,
@@ -174,15 +176,15 @@ impl RedisServer {
                         "echo" => {
                             let echo_str = a[1].to_string(&bm);
                             let echo_resp = format!("${}\r\n{}\r\n", echo_str.len(), echo_str);
-                            self.reply(stream, echo_resp.as_bytes(), false).await;
+                            self.reply(&logger, stream, echo_resp.as_bytes(), false).await;
                         }
                         "ping" => {
-                            self.reply(stream, PONG_RESP, false).await;
+                            self.reply(&logger, stream, PONG_RESP, false).await;
                         }
                         "set" => {
                             if self.config.master_host_port.is_none() {
                                 let s = String::from_utf8_lossy(&bm);
-                                println!("Sending broadcast message: {}", s);
+                                logger.log(&format!("Received SET command: {}", s));
                                 tx.as_ref().unwrap().send(s.into_owned())
                                     .expect("failed to send to broadcast");
                             }
@@ -202,18 +204,18 @@ impl RedisServer {
                                 let value = a[2].to_string(&bm);
                                 self.set(&key, RedisValue::String(value), None);
                             }
-                            self.reply(stream, OK_RESP, is_replica).await;
+                            self.reply(&logger, stream, OK_RESP, is_replica).await;
                         }
                         "get" => {
                             let key = a[1].to_string(&bm);
                             let value = self.get(&key);
                             match value {
                                 Some(value) => {
-                                    self.reply(stream, value.to_response().as_bytes(), false)
+                                    self.reply(&logger, stream, value.to_response().as_bytes(), false)
                                         .await;
                                 }
                                 None => {
-                                    self.reply(stream, NULL_RESP, false).await;
+                                    self.reply(&logger, stream, NULL_RESP, false).await;
                                 }
                             };
                         }
@@ -221,12 +223,12 @@ impl RedisServer {
                             let docs_str = "https://github.com/redis/redis-doc/blob/master/commands.md";
                             let docs_resp = format!("${}\r\n{}\r\n", docs_str.len(), docs_str);
     
-                            self.reply(stream, docs_resp.as_bytes(), false).await;
+                            self.reply(&logger, stream, docs_resp.as_bytes(), false).await;
                         }
                         "info" => {
                             let arg = a[1].to_string(&bm);
                             let info_resp = self.info(&arg).to_response();
-                            self.reply(stream, info_resp.as_bytes(), false).await;
+                            self.reply(&logger, stream, info_resp.as_bytes(), false).await;
                         }
                         "replconf" => {
                             stream.write_all(OK_RESP).await.unwrap();
@@ -236,22 +238,23 @@ impl RedisServer {
                                 "FULLRESYNC {} 0",
                                 self.config.master_replid
                             ));
-                            self.reply(stream, command.to_response().as_bytes(), false)
+                            self.reply(&logger, stream, command.to_response().as_bytes(), false)
                                 .await;
                             let rdb_content = self.rdb_dump();
                             self.reply(
+                                &logger,
                                 stream,
                                 format!("${}\r\n", rdb_content.len()).as_bytes(),
                                 false,
                             )
                             .await;
-                            self.reply(stream, &rdb_content, false).await;
+                            self.reply(&logger, stream, &rdb_content, false).await;
     
                             // At this point we know this connection is from master -> replica 
                             let mut rx = tx.as_ref().unwrap().subscribe();
                             loop {
                                 let msg = rx.recv().await.unwrap();
-                                println!("Received message: {}", msg);
+                                logger.log(&format!("Received message: {}", msg));
                                 stream
                                     .write_all(msg.as_bytes())
                                     .await
@@ -259,13 +262,13 @@ impl RedisServer {
                             }
                         }
                         _ => {
-                            println!("Unknown command for array: {}", command);
+                            logger.log(&format!("Unknown command: {}", command));
                             unimplemented!("No other commands implemented yet for array");
                         }
                     }
                 }
                 c => {
-                    println!("Unknown command: {}", c);
+                    logger.log(&format!("Unknown command: {}", c));
                     unimplemented!("No other commands implemented yet");
                 }
             }
