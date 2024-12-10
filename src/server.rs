@@ -25,6 +25,7 @@ const NULL_RESP: &[u8; 5] = b"$-1\r\n";
 #[derive(Debug, PartialEq, Clone)]
 pub enum RedisValue {
     String(String),
+    BulkString(String),
     Int(i64),
     Array(Vec<RedisValue>),
     Null,
@@ -34,6 +35,7 @@ impl RedisValue {
     pub fn to_response(&self) -> String {
         match self {
             RedisValue::String(s) => format!("+{}\r\n", s),
+            RedisValue::BulkString(s) => format!("${}\r\n{}\r\n", s.len(), s),
             RedisValue::Int(i) => format!(":{}\r\n", i),
             RedisValue::Array(a) => {
                 let mut response = String::from("*");
@@ -51,6 +53,7 @@ impl Display for RedisValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RedisValue::String(s) => write!(f, "{}", s),
+            RedisValue::BulkString(s) => write!(f, "{}", s),
             RedisValue::Int(i) => write!(f, "{}", i),
             RedisValue::Array(a) => {
                 let mut s = String::new();
@@ -68,31 +71,34 @@ impl Display for RedisValue {
         }
     }
 }
-
+#[derive(Debug, Clone)]
 pub struct RedisConfig {
     pub dir: String,
     pub dbfilename: String,
     pub port: u16,
     pub master_host_port: Option<(String, u16)>,
+    pub is_replica: bool,
     pub master_replid: String,
-    pub master_reploffset: i64,
+    pub master_reploffset: usize, // Number of bytes processed from master
 }
 pub struct RedisServer {
     // Need to make thread safe for concurrent access
     pub db: Mutex<HashMap<String, (RedisValue, Option<Instant>)>>,
     pub config: RedisConfig,
+
 }
 
 impl RedisServer {
-    pub fn new(args: Vec<String>) -> RedisServer {
+    pub fn new(args: & Vec<String>) -> RedisServer {
         let mut rs = RedisServer {
             db: Mutex::new(HashMap::new()),
             config: RedisConfig {
-                dir: String::from("."),
-                dbfilename: String::from("dump.rdb"),
+                dir: ".".to_string(),
+                dbfilename: "dump.rdb".to_string(),
                 port: 6379,
                 master_host_port: None,
-                master_replid: String::from("8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"),
+                is_replica: false,
+                master_replid: "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string(),
                 master_reploffset: 0,
             },
         };
@@ -163,9 +169,10 @@ impl RedisServer {
         bm: BytesMut,
         stream: &mut tokio::net::TcpStream,
         tx: Option<Arc<broadcast::Sender<String>>>,
-    ) {
-        let is_replica = self.config.master_host_port.is_some();
+        already_processed_bytes: usize,
+    ) -> usize {
         let mut pos = 0;
+        let mut bytes_processed = 0;
         while pos < bm.len() {
             match bm[pos] {
                 b'*' => {
@@ -182,7 +189,7 @@ impl RedisServer {
                             self.reply(&logger, stream, echo_resp.as_bytes(), false).await;
                         }
                         "ping" => {
-                            self.reply(&logger, stream, PONG_RESP, false).await;
+                            self.reply(&logger, stream, PONG_RESP, self.config.is_replica).await;
                         }
                         "set" => {
                             if self.config.master_host_port.is_none() {
@@ -207,7 +214,7 @@ impl RedisServer {
                                 let value = a[2].to_string(&bm);
                                 self.set(&key, RedisValue::String(value), None);
                             }
-                            self.reply(&logger, stream, OK_RESP, is_replica).await;
+                            self.reply(&logger, stream, OK_RESP, self.config.is_replica).await;
                         }
                         "get" => {
                             let key = a[1].to_string(&bm);
@@ -239,9 +246,9 @@ impl RedisServer {
                                     if &a[2].to_string(&bm) == &"*" {
                                         let response_command = RedisValue::Array(
                                             vec![
-                                                RedisValue::String("REPLCONF".to_string()),
-                                                RedisValue::String("ACK".to_string()),
-                                                RedisValue::String("0".to_string()),
+                                                RedisValue::BulkString("REPLCONF".to_string()),
+                                                RedisValue::BulkString("ACK".to_string()),
+                                                RedisValue::BulkString(already_processed_bytes.to_string()),
                                             ],
                                         );
                                         let response = response_command.to_response();
@@ -298,11 +305,15 @@ impl RedisServer {
                     pos = r.0;
                 }
                 c => {
-                    logger.log(&format!("Unknown command: {} entire bytes {}", c, String::from_utf8_lossy(&bm).to_string()));
+                    logger.log(&format!("Unknown command: {} bytes {}", c, String::from_utf8_lossy(&bm).to_string()));
                     unimplemented!("No other commands implemented yet");
                 }
             }
         }
+        if self.config.is_replica {
+            logger.log(&format!("Replica receieved {} bytes from master, and previously processed {}", bm.len(), already_processed_bytes));
+        }
+        return bm.len();
 
         }
 
@@ -312,7 +323,7 @@ impl RedisServer {
             match arg.as_str() {
                 "--dir" => {
                     if let Some(dir) = args_iter.next() {
-                        self.config.dir = dir.clone();
+                        self.config.dir = dir.to_string();
                     } else {
                         eprintln!("Expected a directory after --dir");
                         return;
@@ -320,7 +331,7 @@ impl RedisServer {
                 }
                 "--dbfilename" => {
                     if let Some(filename) = args_iter.next() {
-                        self.config.dbfilename = filename.clone();
+                        self.config.dbfilename = filename.to_string();
                     } else {
                         eprintln!("Expected a filename after --dbfilename");
                         return;
@@ -342,6 +353,7 @@ impl RedisServer {
                             .expect("Invalid replicaof format");
                         self.config.master_host_port =
                             Some((host.to_string(), port.parse().expect("Invalid port number")));
+                        self.config.is_replica = true;
                     } else {
                         eprintln!("Expected a host after --replicaof");
                         return;
@@ -351,7 +363,6 @@ impl RedisServer {
             }
         }
     }
-
     // For the purposes of this exercise, we'll just use the empty RDB const
     pub fn rdb_dump(&self) -> Vec<u8> {
         decode_hex(EMPTY_RDB_HEX).expect("Failed to decode empty RDB hex")

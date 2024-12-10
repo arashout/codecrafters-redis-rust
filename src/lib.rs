@@ -9,10 +9,14 @@ use tokio::net::{TcpListener, TcpStream};
 mod server;
 use server::{RedisServer, RedisValue};
 
+#[macro_use]
+pub mod macros;
+
 mod parser;
-mod macros;
 mod log;
 use  log::Logger;
+
+
 
 pub struct ThreadPool {
     workers: Vec<Worker>,
