@@ -7,6 +7,15 @@ pub struct Parser {
     index: usize,
 }
 
+pub enum RESPDataType {
+    SimpleString,
+    SimpleError,
+    Integer,
+    BulkString,
+    Array,
+    Null,
+    // etc ...
+}
 /// Fundamental struct for viewing byte slices
 ///
 /// Used for zero-copy redis values.
@@ -95,7 +104,6 @@ impl Parser {
     // fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
     //     unimplemented!()
     // }
-
     pub fn token(src: &BytesMut, index: usize) -> Option<(usize, BufSplit)> {
         let start = index;
         let mut end = index;
@@ -167,7 +175,30 @@ impl Parser {
         }
     }
 
+    pub fn find_start_resp_data_type(buf: &BytesMut, index: usize, datatype: RESPDataType) -> Option<usize> {
+        let mut pos = index;
+        loop {
+            if pos >= buf.len() {
+                return None;
+            }
+            match buf[pos] {
+                b'*' => {
+                    let res = Parser::parse_int(buf, pos);
+                    if res.is_err() {
+                        pos += 1;
+                        continue;
+                    }
+                    return Some(pos);
+                }
+                _ => {
+                    pos += 1;
+                    continue;
+                }
+            }
+        }
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -302,7 +333,24 @@ mod tests {
                 assert_eq!(words[2].to_string(&buf), "789");
             }
             _ => panic!("expected array"),
-        }
-        
+        }    
+    }
 
-    }}
+    #[test]
+    fn test_find_start_resp_type() {
+        let mut buf = BytesMut::from(&"+FULLRESYNC 75cd7bc10c49047e0d163660f3b90625b1af31dc 0\r\n$88\r\nREDIS0011\u{fffd}\tredis-ver\u{5}7.2.0\u{fffd}\nredis-bits\u{fffd}@\u{fffd}\u{5}ctime\u{fffd}m\u{8}\u{fffd}e\u{fffd}\u{8}used-mem\u{b0}\u{fffd}\u{10}\u{fffd}\u{8}aof-base\u{fffd}\u{fffd}\u{fffd}n;\u{fffd}\u{fffd}\u{fffd}Z\u{fffd}*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n*2\r\n$3\r\nSET\r\n$3\r\nfoo\r\n"[..]);
+        let pos = Parser::find_start_resp_data_type(&mut buf, 0, RESPDataType::Array).unwrap();
+        let (pos, split) = Parser::parse_array(&mut buf, pos).unwrap().unwrap();
+        match split {
+            RedisBufSplit::Array(words) => {
+                assert_eq!(words.len(), 3);
+                assert_eq!(words[0].to_string(&buf), "REPLCONF");
+                assert_eq!(words[1].to_string(&buf), "GETACK");
+                assert_eq!(words[2].to_string(&buf), "*");
+                },
+            _ => panic!("expected array"),
+            }
+    }
+
+
+}

@@ -78,16 +78,11 @@ async fn replication_connection(logger: &Logger, stream: &mut TcpStream, server:
     let buf = BytesMut::from(resp.as_bytes());
     let mut i = 0;
     loop {
-        if let Some( (pos, word)) = Parser::token(&buf, i) {
-            let word = word.to_string(&buf);
-            if word.starts_with("*") && word[1..].parse::<usize>().is_ok() {
-                logger.log(&format!("Found Redis Array start: {}", word));
-                println!("{}", String::from_utf8_lossy(buf[i..].as_ref()));
-                let bm = BytesMut::from(buf[i..].as_ref());
-                server.evaluate(&logger, bm, stream, None).await;
-                break;
-            }
-            i = pos;
+        if let Some( pos) = Parser::find_start_resp_data_type(&buf, i, parser::RESPDataType::Array) {
+            logger.log(&format!("Found Redis Array start in FULLRESYNC response: {}", String::from_utf8_lossy(&buf[i..])));
+            let bm = BytesMut::from(buf[pos..].as_ref());
+            server.evaluate(&logger, bm, stream, None).await;
+            break;
         } else {
             break;
         }
