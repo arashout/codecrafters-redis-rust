@@ -57,8 +57,8 @@ pub enum Command {
     Ping,
     Echo(String),
     Docs,
-    Info,
-    ReplConf(String),
+    Info(String),
+    ReplConf(Vec<String>),
     Psync,
     Unknown,
 }
@@ -291,15 +291,20 @@ impl Parser {
                             });
                         }
                         "info" => {
+                            let section = if a.len() == 2 {
+                                a[1].to_string(bm)
+                            } else {
+                                "default".to_string()
+                            };
                             commands.push(ParsedCommand {
-                                command: Command::Info,
+                                command: Command::Info(section),
                                 bytes_read,
                             });
                         }
                         "replconf" => {
-                            let subcommand = a[1].to_string(bm);
+                            let args = a.iter().skip(1).map(|b| b.to_string(bm).to_lowercase()).collect();
                             commands.push(ParsedCommand {
-                                command: Command::ReplConf(subcommand),
+                                command: Command::ReplConf(args),
                                 bytes_read,
                             });
                         }
@@ -508,7 +513,7 @@ mod tests {
         let mut buf = BytesMut::from(&b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"[..]);
         let r = Parser::parse_commands(&log, &mut buf).unwrap();
         assert_eq!(r.len(), 1);
-        assert_eq!(r[0].command, Command::ReplConf("GETACK".to_string()));
+        assert_eq!(r[0].command, Command::ReplConf(vec!["getack".to_string(), "*".to_string()]));
         assert_eq!(r[0].bytes_read, 37);
 
         // ping command

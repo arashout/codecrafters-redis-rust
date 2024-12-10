@@ -95,7 +95,7 @@ async fn replication_connection(
                 String::from_utf8_lossy(&buf[pos..])
             ));
             let bm = BytesMut::from(buf[pos..].as_ref());
-            replicated_bytes_count += server.evaluate(&logger, bm, stream, None, replicated_bytes_count).await;
+            replicated_bytes_count = server.evaluate(&logger, bm, stream, None, replicated_bytes_count).await;
             break;
         } else {
             break;
