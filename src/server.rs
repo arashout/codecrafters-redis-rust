@@ -182,7 +182,7 @@ impl RedisServer {
         let commands = Parser::parse_commands(logger, &bm).expect("Failed to parse commands");
         let mut processed_bytes = 0;
         for command in commands {
-            match command.command {
+            match &command.command {
                 Command::Ping => {
                     self.reply(&logger, stream, PONG_RESP, self.config.is_replica)
                         .await;
@@ -202,7 +202,7 @@ impl RedisServer {
                             .expect("failed to send to broadcast");
                     }
                     // TODO: In the future, we don't have to assume it's a string
-                    self.set(&key, RedisValue::String(value), duration);
+                    self.set(&key, RedisValue::String(value.to_owned()), duration.to_owned());
                     self.reply(&logger, stream, OK_RESP, self.config.is_replica)
                         .await;
                 }
@@ -282,17 +282,11 @@ impl RedisServer {
                     unimplemented!("Command {:?} not implemented", command.command);
                 }
             }
+            logger.log(&format!("Previously processed, processed in this iteration, current command bytes, command: {} {} {} {:?}", already_processed_bytes, processed_bytes, command.bytes_read, command.command));
             processed_bytes += command.bytes_read;
         }
 
-        if self.config.is_replica {
-            logger.log(&format!(
-                "Replica receieved {} bytes from master, and previously processed {}",
-                processed_bytes,
-                already_processed_bytes
-            ));
-        }
-        return processed_bytes + already_processed_bytes;
+        return processed_bytes;
     }
 
     fn parse_command_line(&mut self, args: &Vec<String>) {
